@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "commands": [
+    "SAVE_WAYPOINT",
+    "SET_STRATEGY",
+    "UNLOCK_EDIT",
+    "LOCK_EDIT",
+    "START_MISSION",
+    "ABORT_MISSION"
+  ],
+  "ack_required": true
+}

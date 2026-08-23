@@ -1,0 +1,86 @@
+{
+  "camera_name": "front",
+  "intrinsics": {
+    "resolution": [
+      640,
+      640
+    ],
+    "camera_matrix": [
+      [
+        null,
+        0.0,
+        null
+      ],
+      [
+        0.0,
+        null,
+        null
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "dist_coeffs": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "extrinsics": {
+    "position_body_m": [
+      0,
+      0,
+      0
+    ],
+    "rotation_body_deg": [
+      0,
+      0,
+      0
+    ]
+  },
+  "valid": false,
+  "camera": "front",
+  "image_width": 640,
+  "image_height": 640,
+  "camera_matrix": [
+    [
+      0.0,
+      0.0,
+      320.0
+    ],
+    [
+      0.0,
+      0.0,
+      320.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "dist_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "camera_to_body": {
+    "position_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rpy_deg": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "note": "Set valid=true only after real calibration. V1.9.3 may use a clearly marked TEST_ESTIMATE in test profiles only."
+}

@@ -1,0 +1,31 @@
+{
+  "FAST": {
+    "max_speed_mps": 6.0,
+    "approach_speed_mps": 2.0,
+    "accel_limit_mps2": 3.5,
+    "jerk_limit_mps3": 6.0,
+    "acceptance_radius_m": 0.5
+  },
+  "VISION_GATE": {
+    "kp_x": 0.8,
+    "kp_y": 0.8,
+    "kp_z": 0.6,
+    "max_vx_mps": 5.0,
+    "max_vy_mps": 2.5,
+    "max_vz_mps": 1.5,
+    "deadband_x": 0.04,
+    "deadband_y": 0.04,
+    "filter_alpha": 0.25,
+    "accel_limit_mps2": 3.0,
+    "jerk_limit_mps3": 5.0,
+    "lost_target_timeout_s": 0.25
+  },
+  "DROP_ALIGNMENT": {
+    "max_xy_speed_mps": 1.2,
+    "max_z_speed_mps": 0.6,
+    "deadband_xy_m": 0.05,
+    "pose_filter_alpha": 0.2,
+    "target_lock_time_s": 0.5,
+    "lost_marker_timeout_s": 0.3
+  }
+}

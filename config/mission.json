@@ -1,0 +1,84 @@
+{
+  "name": "KINGPHOENIX_V1",
+  "sequence": [
+    {
+      "id": 1,
+      "type": "TAKEOFF",
+      "altitude_m": 0.5
+    },
+    {
+      "id": 2,
+      "type": "WAYPOINT",
+      "wp": 1,
+      "profile": "FAST"
+    },
+    {
+      "id": 3,
+      "type": "VISION_GATE",
+      "camera": "front",
+      "profile": "VISION_GATE"
+    },
+    {
+      "id": 4,
+      "type": "WAYPOINT",
+      "wp": 2,
+      "profile": "FAST"
+    },
+    {
+      "id": 5,
+      "type": "VISION_GATE",
+      "camera": "front",
+      "task": "ENTER_GOAL",
+      "profile": "VISION_GATE"
+    },
+    {
+      "id": 6,
+      "type": "WAYPOINT",
+      "wp": 3,
+      "profile": "FAST"
+    },
+    {
+      "id": 7,
+      "type": "DROP_ALIGNMENT",
+      "camera": "bottom",
+      "primary": "ARUCO_POSE",
+      "fallback": {
+        "model": "YOLO26",
+        "class_id": 2
+      },
+      "profile": "DROP_ALIGNMENT"
+    },
+    {
+      "id": 8,
+      "type": "DROP_LOGISTICS"
+    },
+    {
+      "id": 9,
+      "type": "VISION_GATE",
+      "camera": "front",
+      "profile": "VISION_GATE"
+    },
+    {
+      "id": 10,
+      "type": "WAYPOINT",
+      "wp": 4,
+      "profile": "FAST"
+    },
+    {
+      "id": 11,
+      "type": "VISION_GATE",
+      "camera": "front",
+      "profile": "VISION_GATE"
+    },
+    {
+      "id": 12,
+      "type": "WAYPOINT",
+      "wp": 5,
+      "profile": "FAST"
+    },
+    {
+      "id": 13,
+      "type": "LAND"
+    }
+  ]
+}

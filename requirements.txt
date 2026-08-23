@@ -1,0 +1,6 @@
+numpy
+opencv-python
+pymavlink
+
+# Real CSI camera runtime (system package):
+# sudo apt install python3-picamera2

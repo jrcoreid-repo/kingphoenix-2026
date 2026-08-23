@@ -1,0 +1,35 @@
+KINGPHOENIX V1.7.1 - HARDWARE VALIDATION RECORD
+Date: 20 August 2026
+Hardware: Kakute H7 / ArduPilot
+MAVLink identity:
+  Kingphoenix: 1:191
+  Flight Controller target: 1:1
+
+TEST: ARM VCT EXPECTED REJECTION
+
+Initial state:
+  Connected: YES
+  Armed: NO
+  Heartbeat: FRESH
+  Mode: STABILIZE
+
+ARM transaction:
+  PRECHECK: PASS
+  TX: SENT
+  COMMAND_ACK: 4 (FAILED)
+  ACK source: 1:1
+  Outcome: REJECTED
+  Attempts: 1
+  Vehicle remained armed: NO
+  Elapsed: ~0.010 s
+
+Captured FC STATUSTEXT:
+  severity=2 | Arm: RC not found
+  severity=2 | Arm: 3D Accel calibration needed
+  severity=2 | Arm: Compass not calibrated
+
+FINAL:
+  PASS
+  EXPECTED FC REJECTION CORRECTLY DETECTED
+  VEHICLE REMAINED DISARMED
+  NO BLIND RETRY OBSERVED

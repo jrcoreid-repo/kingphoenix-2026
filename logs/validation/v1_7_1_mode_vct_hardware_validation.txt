@@ -1,0 +1,31 @@
+KINGPHOENIX V1.7.1 - HARDWARE VALIDATION RECORD
+Date: 20 August 2026
+Hardware: Kakute H7 / ArduPilot
+MAVLink identity:
+  Kingphoenix: 1:191
+  Flight Controller target: 1:1
+
+TEST: MODE VCT ROUND TRIP
+
+Initial mode:
+  STABILIZE
+
+Transaction A:
+  STABILIZE -> GUIDED
+  PRECHECK: PASS
+  TX: SENT
+  State verification: PASS
+  Attempts: 1
+  Elapsed: ~0.020 s
+
+Transaction B:
+  GUIDED -> STABILIZE
+  PRECHECK: PASS
+  TX: SENT
+  State verification: PASS
+  Attempts: 1
+  Elapsed: ~0.020 s
+
+FINAL:
+  PASS
+  MODE VCT HARDWARE VALIDATED

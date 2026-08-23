@@ -1,0 +1,46 @@
+{
+  "camera_name": "bottom",
+  "intrinsics": {
+    "resolution": [
+      640,
+      640
+    ],
+    "camera_matrix": [
+      [
+        null,
+        0.0,
+        null
+      ],
+      [
+        0.0,
+        null,
+        null
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "dist_coeffs": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "extrinsics": {
+    "position_body_m": [
+      0,
+      0,
+      0
+    ],
+    "rotation_body_deg": [
+      0,
+      0,
+      0
+    ]
+  },
+  "valid": false
+}
