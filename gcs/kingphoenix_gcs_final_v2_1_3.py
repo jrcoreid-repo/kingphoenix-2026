@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Kingphoenix GCS V2.1.5.
+"""Kingphoenix GCS V2.1.6.
 
 Keeps the frozen final operator layout, preserves the safe-set guard,
-and shows wlan1 RSSI as a longer color-coded progress bar beside the
-connection message.
+shows wlan1 RSSI as a long color-coded progress bar, and adds explicit
+GCS<->Pi link lifecycle status on graceful application close.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import kingphoenix_gcs_final as gcs
 _original_set_value = dpg.set_value
 _original_create_gui = gcs.create_gui
 _original_update_info_panel = gcs.update_info_panel
+_original_shutdown = gcs.shutdown
 
 
 def _safe_set_value(item, value):
@@ -110,14 +111,29 @@ def _update_info_panel_with_rssi():
         print(f"[GCS] RSSI progress update warning: {exc}")
 
 
+def _shutdown_with_link_status():
+    if getattr(gcs, "is_connected", False):
+        print("[LINK] GCS close requested -> sending DISCONNECT to Raspberry Pi")
+    else:
+        print("[LINK] GCS close requested -> Pi link already disconnected")
+
+    try:
+        _original_shutdown()
+    finally:
+        print("[LINK] GCS network session CLOSED locally")
+        print("[LINK] Raspberry Pi should report GRACEFUL CLOSE; heartbeat watchdog is fallback")
+
+
 def main():
     dpg.set_value = _safe_set_value
     gcs.dpg.set_value = _safe_set_value
     gcs.create_gui = _create_gui_with_rssi
     gcs.update_info_panel = _update_info_panel_with_rssi
+    gcs.shutdown = _shutdown_with_link_status
 
-    print("[GCS] V2.1.5 wlan1 long RSSI progress bar enabled")
+    print("[GCS] V2.1.6 RSSI + supervised GCS/Pi link status enabled")
     print("[GCS] RSSI colors: green >= -67, yellow -68..-75, red < -75 dBm")
+    print("[GCS] Pi heartbeat timeout fallback: 3 s")
     gcs.main()
 
 
