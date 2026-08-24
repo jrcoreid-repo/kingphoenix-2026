@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Kingphoenix GCS V2.1.4.
+"""Kingphoenix GCS V2.1.5.
 
 Keeps the frozen final operator layout, preserves the safe-set guard,
-and shows wlan1 RSSI as a compact progress bar beside the connection message.
+and shows wlan1 RSSI as a longer color-coded progress bar beside the
+connection message.
 """
 
 from __future__ import annotations
@@ -28,61 +29,63 @@ def _safe_set_value(item, value):
     return _original_set_value(item, value)
 
 
+def _create_rssi_themes():
+    """Create RSSI progress-bar themes once; switch theme at runtime."""
+    specs = {
+        "wifi_rssi_theme_green": (55, 190, 85, 255),
+        "wifi_rssi_theme_yellow": (225, 175, 35, 255),
+        "wifi_rssi_theme_red": (215, 60, 55, 255),
+        "wifi_rssi_theme_gray": (95, 95, 100, 255),
+    }
+
+    for tag, color in specs.items():
+        if dpg.does_item_exist(tag):
+            continue
+        with dpg.theme(tag=tag):
+            with dpg.theme_component(dpg.mvProgressBar):
+                dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, color)
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (28, 32, 36, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
+
+
 def _create_gui_with_rssi():
     _original_create_gui()
     try:
+        _create_rssi_themes()
         dpg.add_spacer(width=12, parent="connection_strip")
         dpg.add_text("WLAN1", parent="connection_strip", color=(145, 180, 220, 255))
         dpg.add_progress_bar(
             default_value=0.0,
             tag="wifi_rssi_progress",
             parent="connection_strip",
-            width=120,
+            width=240,
             height=18,
             overlay="-- dBm",
         )
+        dpg.bind_item_theme("wifi_rssi_progress", "wifi_rssi_theme_gray")
     except Exception as exc:
         print(f"[GCS] RSSI progress widget create warning: {exc}")
 
 
 def _rssi_to_fraction(rssi):
-    """Map Wi-Fi RSSI to an operator-friendly 0..1 link-quality bar."""
+    """Map -90..-50 dBm into 0..100% for a field-friendly bar."""
     if rssi is None:
         return 0.0
 
     rssi = float(rssi)
-    # Practical field mapping:
-    # -90 dBm or worse = 0%, -50 dBm or better = 100%.
     return max(0.0, min(1.0, (rssi + 90.0) / 40.0))
 
 
-def _rssi_color(rssi):
+def _rssi_theme_tag(rssi):
     if rssi is None:
-        return (95, 95, 100, 255)
+        return "wifi_rssi_theme_gray"
+
     rssi = float(rssi)
-    if rssi >= -67:
-        return (55, 185, 85, 255)       # green
-    if rssi >= -74:
-        return (215, 165, 35, 255)      # yellow
-    return (205, 60, 55, 255)           # red
-
-
-def _apply_progress_color(color):
-    """Create/reuse a tiny progress-bar theme for the current RSSI band."""
-    theme_tag = "wifi_rssi_theme"
-    if dpg.does_item_exist(theme_tag):
-        try:
-            dpg.delete_item(theme_tag)
-        except Exception:
-            pass
-
-    with dpg.theme(tag=theme_tag):
-        with dpg.theme_component(dpg.mvProgressBar):
-            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, color)
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (35, 40, 45, 255))
-            dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
-
-    dpg.bind_item_theme("wifi_rssi_progress", theme_tag)
+    if rssi >= -67.0:
+        return "wifi_rssi_theme_green"
+    if rssi >= -75.0:
+        return "wifi_rssi_theme_yellow"
+    return "wifi_rssi_theme_red"
 
 
 def _update_info_panel_with_rssi():
@@ -95,10 +98,14 @@ def _update_info_panel_with_rssi():
 
         if dpg.does_item_exist("wifi_rssi_progress"):
             fraction = _rssi_to_fraction(rssi)
-            overlay = "-- dBm" if rssi is None else f"{float(rssi):.0f} dBm"
+            if rssi is None:
+                overlay = "-- dBm"
+            else:
+                overlay = f"{float(rssi):.0f} dBm   {fraction * 100.0:.0f}%"
+
             _original_set_value("wifi_rssi_progress", fraction)
             dpg.configure_item("wifi_rssi_progress", overlay=overlay)
-            _apply_progress_color(_rssi_color(rssi))
+            dpg.bind_item_theme("wifi_rssi_progress", _rssi_theme_tag(rssi))
     except Exception as exc:
         print(f"[GCS] RSSI progress update warning: {exc}")
 
@@ -109,8 +116,8 @@ def main():
     gcs.create_gui = _create_gui_with_rssi
     gcs.update_info_panel = _update_info_panel_with_rssi
 
-    print("[GCS] V2.1.4 wlan1 RSSI progress bar enabled")
-    print("[GCS] RSSI colors: green >= -67, yellow >= -74, red < -74 dBm")
+    print("[GCS] V2.1.5 wlan1 long RSSI progress bar enabled")
+    print("[GCS] RSSI colors: green >= -67, yellow -68..-75, red < -75 dBm")
     gcs.main()
 
 
