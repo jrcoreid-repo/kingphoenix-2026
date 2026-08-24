@@ -25,6 +25,7 @@ class GcsServer(threading.Thread):
         self.port = int(self.stream_cfg["control_port"])
         self.last_gcs_heartbeat_ns = 0
         self.gcs_endpoint = None
+        self.gcs_timeout_s = float(self.stream_cfg.get("gcs_timeout_s", 3.0))
 
     def _hello_ack(self):
         return {
@@ -39,19 +40,44 @@ class GcsServer(threading.Thread):
             "active_ai_camera": self.state.vision.get(
                 "active_ai_camera", "front"
             ),
-            "version": "1.9.0.1",
+            "version": "2.1.6",
         }
+
+    def _mark_disconnected(self, reason):
+        was_connected = bool(self.state.system.get("gcs_connected", False))
+        self.state.system["gcs_connected"] = False
+        self.gcs_endpoint = None
+        self.state.system["gcs_endpoint"] = None
+        self.last_gcs_heartbeat_ns = 0
+
+        if was_connected:
+            print(f"[CONTROL] GCS DISCONNECTED | reason={reason}")
+            print("[CONTROL] Pi runtime remains ACTIVE and waiting for GCS reconnect")
+
+    def _check_gcs_timeout(self):
+        if not self.state.system.get("gcs_connected", False):
+            return
+        if self.last_gcs_heartbeat_ns <= 0:
+            return
+
+        age_s = (time.monotonic_ns() - self.last_gcs_heartbeat_ns) / 1e9
+        if age_s > self.gcs_timeout_s:
+            self._mark_disconnected(
+                f"HEARTBEAT TIMEOUT {age_s:.1f}s > {self.gcs_timeout_s:.1f}s"
+            )
 
     def run(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("0.0.0.0", self.port))
         sock.settimeout(0.2)
         print(f"[GCS] control UDP :{self.port}")
+        print(f"[GCS] heartbeat watchdog : {self.gcs_timeout_s:.1f}s")
 
         while not self.stop_event.is_set():
             try:
                 data, peer = sock.recvfrom(65535)
             except socket.timeout:
+                self._check_gcs_timeout()
                 continue
 
             try:
@@ -66,6 +92,8 @@ class GcsServer(threading.Thread):
                 except Exception:
                     pass
 
+            self._check_gcs_timeout()
+
         sock.close()
 
     def handle(self, msg, peer=None):
@@ -73,10 +101,6 @@ class GcsServer(threading.Thread):
         kind = str(msg.get("type", "")).upper()
 
         if kind == "HELLO":
-            # V1.9.0.1: the actual UDP source address is authoritative.
-            # The Windows GCS computes pc_ip using its default route, which can
-            # be wrong on multi-NIC/VPN/WSL systems. The HELLO packet's peer[0]
-            # is the address that demonstrably reached this Raspberry Pi.
             claimed_pc_ip = str(msg.get("pc_ip") or "")
             peer_ip = str(peer[0] if peer else "")
             pc_ip = peer_ip or claimed_pc_ip
@@ -104,6 +128,7 @@ class GcsServer(threading.Thread):
             self.state.system["gcs_connected"] = True
             self.last_gcs_heartbeat_ns = time.monotonic_ns()
             print(f"[CONTROL] GCS CONNECTED peer={peer_ip} claimed={claimed_pc_ip or '--'}")
+            print("[CONTROL] Heartbeat supervision ACTIVE")
             print(
                 "[STREAM] destination "
                 f"{pc_ip} | front={self.gcs_endpoint['front_video_port']}/"
@@ -114,15 +139,13 @@ class GcsServer(threading.Thread):
             return self._hello_ack()
 
         if kind == "HEARTBEAT":
-            self.last_gcs_heartbeat_ns = time.monotonic_ns()
-            self.state.system["gcs_connected"] = True
+            if self.gcs_endpoint is not None:
+                self.last_gcs_heartbeat_ns = time.monotonic_ns()
+                self.state.system["gcs_connected"] = True
             return None
 
         if kind == "DISCONNECT":
-            self.state.system["gcs_connected"] = False
-            self.gcs_endpoint = None
-            self.state.system["gcs_endpoint"] = None
-            print("[CONTROL] GCS DISCONNECTED")
+            self._mark_disconnected("GCS GRACEFUL CLOSE")
             return {"type": "DISCONNECT_ACK", "ok": True}
 
         if kind == "UNLOCK_EDIT":
