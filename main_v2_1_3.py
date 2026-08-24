@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Kingphoenix V2.1.3 runtime wrapper.
+"""Kingphoenix V2.1.6 runtime wrapper.
 
-Adds low-overhead wlan1 RSSI telemetry to the existing Pi Health payload without
-changing the frozen video pipeline or MAVLink behavior.
+Adds low-overhead wlan1 RSSI telemetry and a selective read-only MAVLink
+telemetry snapshot for the GCS. Flight movement/control TX remains disabled.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from pathlib import Path
 
 from core.runtime import KingphoenixRuntime
 from system.health import PiHealthMonitor
+from streaming.vision_stream_session import CameraStreamWorker
 
 
 WIFI_INTERFACE = "wlan1"
@@ -29,7 +30,6 @@ def _read_wifi_rssi_dbm(interface=WIFI_INTERFACE):
             fields = rest.split()
             if len(fields) < 3:
                 return None
-            # /proc/net/wireless columns after status: quality, level, noise.
             return float(fields[2].rstrip("."))
     except Exception:
         return None
@@ -76,8 +76,52 @@ def _sample_with_wifi(self):
 PiHealthMonitor.sample = _sample_with_wifi
 
 
+# ---------------------------------------------------------------------------
+# Selective MAVLink telemetry -> GCS
+# ---------------------------------------------------------------------------
+# We intentionally do NOT forward every MAVLink message/parameter to the GUI.
+# The Pi remains the single FC serial owner and only exports an operator-facing
+# snapshot derived from VehicleState.
+
+def _telemetry_snapshot_v216(self):
+    v = self.state.vehicle
+    with self.state.lock:
+        pi_health = dict(self.state.system.get("pi_health") or {})
+
+    heartbeat_age = v.heartbeat_age_s()
+    if heartbeat_age == float("inf"):
+        heartbeat_age = None
+
+    return {
+        "connected": bool(v.connected),
+        "heartbeat_age_s": heartbeat_age,
+        "mode": str(v.mode or "UNKNOWN"),
+        "armed": bool(v.armed),
+        "battery_v": v.battery_v,
+        "battery_remaining": v.battery_remaining,
+        "relative_alt_m": v.relative_alt_m,
+        "groundspeed_mps": v.groundspeed_mps,
+        "gps_satellites": v.gps_satellites,
+        "gps_fix_type": v.gps_fix_type,
+        "rangefinder_m": v.rangefinder_distance_m,
+        "rangefinder_source": v.rangefinder_source,
+        "rangefinder_age_s": (
+            None if v.rangefinder_last_ns == 0 else v.rangefinder_age_s()
+        ),
+        "mission_item": v.current_mission_item,
+        "autopilot_system_id": v.autopilot_system_id,
+        "autopilot_component_id": v.autopilot_component_id,
+        "pi_health": pi_health,
+    }
+
+
+CameraStreamWorker._telemetry_snapshot = _telemetry_snapshot_v216
+
+
 def main():
-    print("[RUNTIME] V2.1.3 wlan1 RSSI telemetry enabled")
+    print("[RUNTIME] V2.1.6 wlan1 RSSI + selective MAVLink telemetry enabled")
+    print("[MAVLINK] READ-ONLY GCS telemetry: link/mode/armed/battery/alt/speed/GPS/LiDAR")
+    print("[MAVLINK] Flight movement/control TX remains DISABLED")
     runtime = KingphoenixRuntime()
     try:
         runtime.start()
