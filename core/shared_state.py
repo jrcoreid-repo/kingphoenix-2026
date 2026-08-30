@@ -11,6 +11,7 @@ from flight.vehicle_state import VehicleState
 def _camera_state(ai_state, ai_task):
     return {
         "video_state": "OFFLINE",
+        "camera_open": False,
         "ai_state": ai_state,
         "ai_task": ai_task,
         "frame_id": None,
@@ -58,6 +59,26 @@ class SharedState:
         self.mission = MissionState()
         self.system = {
             "running": False,
+            "startup_state": "BOOT",
+            "ready_for_mission": False,
+            "readiness": {
+                "timestamp_ns": 0,
+                "status": "INITIALIZING",
+                "ready_for_mission": False,
+                "failed_critical": [],
+                "checks": {},
+            },
+            "ai_health": {
+                "timestamp_ns": 0,
+                "status": "INITIALIZING",
+                "device": "UNKNOWN",
+                "hef": "UNKNOWN",
+                "network_group": "UNKNOWN",
+                "inference": "UNKNOWN",
+                "attempt": 0,
+                "last_error": None,
+                "detail": "waiting for Hailo startup self-test",
+            },
             "gcs_connected": False,
             "gcs_endpoint": None,
             "run_profile": "UNKNOWN",
