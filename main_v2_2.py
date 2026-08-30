@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Kingphoenix V2.2 Startup Supervisor / System Readiness.
+"""Kingphoenix V2.2.1 Startup Supervisor / System Readiness.
 
 Keeps V2.1.6 RSSI + selective read-only MAVLink telemetry, adds robust Hailo
 startup retries with a real inference sanity test, camera-open checks, and a
-single system.ready_for_mission authority. Diagnostic services stay alive when
-critical hardware fails; mission readiness stays locked.
+single system.ready_for_mission authority.
+
+Important V2.2.1 boot semantics:
+- The Python process and diagnostic services stay alive on hardware failure.
+- Operational/flight readiness remains BLOCKED until all critical checks PASS.
+- The verbose VehicleMonitor is quarantined during startup so NOT_READY does
+  not look like the normal running state.
 """
 
 from __future__ import annotations
@@ -16,9 +21,11 @@ import main_v2_1_3  # noqa: F401
 
 from core.runtime import KingphoenixRuntime
 from streaming.vision_stream_session import VisionStreamSession, CameraStreamWorker
+from system.vehicle_monitor import VehicleMonitor
 
 
 _original_system_metadata_snapshot = CameraStreamWorker._system_metadata_snapshot
+_original_vehicle_monitor_run = VehicleMonitor.run
 
 
 def _system_metadata_snapshot_v22(self):
@@ -68,7 +75,6 @@ def _install_camera_open_probe(session, worker):
 
 
 def _vision_start_v22(self):
-    ai_cfg = self.cfg.get("ai", {})
     startup_cfg = self.cfg.get("readiness", {}).get("hailo", {})
     max_attempts = max(1, int(startup_cfg.get("max_attempts", 3)))
     retry_delay_s = max(0.0, float(startup_cfg.get("retry_delay_s", 1.0)))
@@ -110,9 +116,7 @@ def _vision_start_v22(self):
                     detail="device + HEF + network group active; testing inference",
                 )
 
-                # Real Hailo inference, not only /dev/hailo0 existence. A blank
-                # canonical frame is sufficient to prove the entire inference
-                # path can accept a tensor and return normally.
+                # Real Hailo inference, not only /dev/hailo0 existence.
                 import numpy as np
 
                 camera_runtime = self.cfg.get("camera", {}).get("runtime", {})
@@ -169,8 +173,8 @@ def _vision_start_v22(self):
                 detail=f"Hailo OFFLINE after {max_attempts} attempts",
             )
 
-    # Camera workers still run even if Hailo failed so the operator keeps
-    # diagnostic video. Wrap camera.open() to expose actual boot status.
+    # Cameras are still opened for startup diagnostics and GCS video. They do
+    # not imply mission/flight readiness.
     for worker in self.workers:
         _install_camera_open_probe(self, worker)
         worker.start()
@@ -182,14 +186,40 @@ def _vision_start_v22(self):
 VisionStreamSession.start = _vision_start_v22
 
 
+def _vehicle_monitor_run_v221(self):
+    """Suppress the normal giant vehicle dump until system readiness PASS."""
+    last_status = None
+    while not self.stop_event.is_set():
+        ready = bool(self.state.system.get("ready_for_mission", False))
+        if ready:
+            print("[STARTUP] READINESS PASS -> enabling normal VehicleMonitor output")
+            return _original_vehicle_monitor_run(self)
+
+        readiness = self.state.system.get("readiness") or {}
+        failed = readiness.get("failed_critical") or []
+        signature = tuple(failed)
+        if signature != last_status:
+            last_status = signature
+            print(
+                "[STARTUP] FLIGHT RUNTIME BLOCKED | waiting="
+                + (",".join(failed) if failed else "startup checks")
+            )
+            print("[STARTUP] Diagnostic services ACTIVE; mission/control remain LOCKED")
+        self.stop_event.wait(1.0)
+
+
+VehicleMonitor.run = _vehicle_monitor_run_v221
+
+
 def main():
     print("============================================================")
-    print(" KINGPHOENIX V2.2 - STARTUP SUPERVISOR / SYSTEM READINESS")
+    print(" KINGPHOENIX V2.2.1 - STARTUP SUPERVISOR / SYSTEM READINESS")
     print("============================================================")
-    print("[V2.2] Critical hardware must PASS before READY FOR MISSION")
-    print("[V2.2] Hailo check includes REAL inference + retry recovery")
-    print("[V2.2] Runtime/GCS/video diagnostics stay alive on hardware FAIL")
-    print("[V2.2] Flight movement/control TX remains DISABLED")
+    print("[V2.2.1] Critical hardware must PASS before operational READY")
+    print("[V2.2.1] Hailo check includes REAL inference + retry recovery")
+    print("[V2.2.1] Diagnostic services may stay alive while flight runtime is BLOCKED")
+    print("[V2.2.1] Verbose VehicleMonitor starts only after readiness PASS")
+    print("[V2.2.1] Flight movement/control TX remains DISABLED")
 
     runtime = KingphoenixRuntime()
     try:
