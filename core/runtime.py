@@ -21,6 +21,7 @@ from streaming.gcs_server import GcsServer
 from streaming.vision_stream_session import VisionStreamSession
 from system.health import HealthWorker
 from system.vehicle_monitor import VehicleMonitor
+from system.readiness import ReadinessSupervisor
 
 
 class KingphoenixRuntime:
@@ -42,8 +43,6 @@ class KingphoenixRuntime:
 
         self.connection = MavlinkConnection(mav_cfg)
         self.tx = MavlinkTx(self.connection)
-
-        # V1.3 central freshness policy. It consumes VehicleState only.
         self.freshness = FreshnessPolicy(self.state.vehicle, freshness_cfg)
 
         self.rangefinder_policy = RangefinderStatePolicy(
@@ -106,6 +105,14 @@ class KingphoenixRuntime:
             hz=self.cfg.get("rates_hz", {}).get("vehicle_monitor", 2.0),
         )
 
+        readiness_cfg = self.cfg.get("readiness", {})
+        self.readiness = ReadinessSupervisor(
+            self.state,
+            self.stop_event,
+            cfg=readiness_cfg,
+            hz=self.cfg.get("rates_hz", {}).get("readiness", 2.0),
+        )
+
         self.workers = [
             self.rx,
             self.stream_config,
@@ -114,19 +121,27 @@ class KingphoenixRuntime:
             self.gcs,
             self.health,
             self.vehicle_monitor,
+            self.readiness,
         ]
 
     def start(self):
-        print("[RUNTIME] starting Kingphoenix V2.1 Pi Health + Lightweight YOLO26")
-        self.state.system["running"] = True
+        print("[RUNTIME] starting Kingphoenix V2.2 Startup Supervisor")
+        with self.state.lock:
+            self.state.system["running"] = True
+            self.state.system["startup_state"] = "INITIALIZING"
+            self.state.system["ready_for_mission"] = False
+
         self.connection.open()
 
         for worker in self.workers:
             worker.start()
 
-        # V1.9.x vision/streaming branch. This sends video + metadata only.
-        # It never sends movement MAVLink commands.
+        # Vision remains diagnostic-capable even when AI readiness fails.
+        # Movement/mission TX is still disabled in the V2 branch.
         self.vision_stream.start()
+
+        with self.state.lock:
+            self.state.system["startup_state"] = "SELF_TEST"
 
     def wait(self):
         while not self.stop_event.is_set():
@@ -138,7 +153,10 @@ class KingphoenixRuntime:
 
         print("[RUNTIME] stopping")
         self.stop_event.set()
-        self.state.system["running"] = False
+        with self.state.lock:
+            self.state.system["running"] = False
+            self.state.system["ready_for_mission"] = False
+            self.state.system["startup_state"] = "STOPPED"
 
         for worker in self.workers:
             if hasattr(worker, "join"):
