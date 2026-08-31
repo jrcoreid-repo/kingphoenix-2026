@@ -57,8 +57,12 @@ class MissionPlannerGateway(threading.Thread):
 
         if endpoint:
             try:
-                ip = endpoint[0]
-                return (str(ip), self.destination_port)
+                if isinstance(endpoint, dict):
+                    ip = endpoint.get("ip")
+                else:
+                    ip = endpoint[0]
+                if ip:
+                    return (str(ip), self.destination_port)
             except Exception:
                 pass
         return None
