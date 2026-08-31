@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import time
 
@@ -13,6 +14,7 @@ from flight.mavlink_stream_config import MavlinkStreamConfigurator
 from flight.freshness_policy import FreshnessPolicy
 from flight.rangefinder_state import RangefinderStatePolicy
 from flight.command_manager import CommandManager
+from flight.mission_planner_gateway import MissionPlannerGateway
 from mission.mission_loader import MissionLoader
 from mission.waypoint_manager import WaypointManager
 from mission.mission_manager import MissionManager
@@ -63,12 +65,18 @@ class KingphoenixRuntime:
         self.loader = MissionLoader()
         self.waypoints = WaypointManager(self.state)
 
+        mp_cfg = self.cfg.get("mission_planner_gateway", {})
+        self.mp_mirror_queue = queue.Queue(
+            maxsize=int(mp_cfg.get("mirror_queue_size", 512))
+        )
+
         self.rx = MavlinkRxWorker(
             self.connection,
             self.state,
             self.events,
             self.stop_event,
             heartbeat_timeout_s=mav_cfg.get("heartbeat_timeout_s", 2.5),
+            mirror_queue=self.mp_mirror_queue,
         )
 
         self.stream_config = MavlinkStreamConfigurator(
@@ -89,6 +97,13 @@ class KingphoenixRuntime:
         )
         self.safety = SafetyManager(self.state, self.events, self.stop_event)
         self.gcs = GcsServer(self.state, self.events, self.waypoints, self.stop_event)
+        self.mp_gateway = MissionPlannerGateway(
+            self.state,
+            self.tx,
+            self.mp_mirror_queue,
+            self.stop_event,
+            cfg=mp_cfg,
+        )
         self.health = HealthWorker(
             self.state,
             self.stop_event,
@@ -119,13 +134,14 @@ class KingphoenixRuntime:
             self.safety,
             self.mission,
             self.gcs,
+            self.mp_gateway,
             self.health,
             self.vehicle_monitor,
             self.readiness,
         ]
 
     def start(self):
-        print("[RUNTIME] starting Kingphoenix V2.2 Startup Supervisor")
+        print("[RUNTIME] starting Kingphoenix V2.2.2 MAVLink Networking Bench")
         with self.state.lock:
             self.state.system["running"] = True
             self.state.system["startup_state"] = "INITIALIZING"
@@ -137,7 +153,8 @@ class KingphoenixRuntime:
             worker.start()
 
         # Vision remains diagnostic-capable even when AI readiness fails.
-        # Movement/mission TX is still disabled in the V2 branch.
+        # Flight movement TX remains disabled; only explicit bench VCT commands
+        # and filtered Mission Planner RTCM may write to the FC.
         self.vision_stream.start()
 
         with self.state.lock:
