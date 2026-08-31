@@ -21,6 +21,23 @@ class MavlinkTx:
     def with_master(self):
         return self.connection.master
 
+    def send_message(self, msg):
+        """Send one parsed MAVLink message through the coordinated TX lock.
+
+        Used by filtered network gateways (for example Mission Planner RTCM)
+        so every FC-bound write still shares the same serialized TX path.
+        """
+        master = self.with_master()
+        if master is None or msg is None:
+            return False
+
+        try:
+            with self.lock:
+                master.mav.send(msg)
+            return True
+        except Exception:
+            return False
+
     def send_mode(self, mode_name: str):
         master = self.with_master()
         if master is None:
