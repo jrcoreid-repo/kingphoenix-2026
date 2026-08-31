@@ -16,6 +16,7 @@ class MavlinkRxWorker(threading.Thread):
         events,
         stop_event,
         heartbeat_timeout_s=2.5,
+        mirror_queue=None,
     ):
         super().__init__(name="MAVLinkRX")
         self.connection = connection
@@ -24,6 +25,20 @@ class MavlinkRxWorker(threading.Thread):
         self.stop_event = stop_event
         self.heartbeat_timeout_s = float(heartbeat_timeout_s)
         self.heartbeat_lost_latched = False
+        self.mirror_queue = mirror_queue
+
+    def _mirror_packet(self, msg):
+        if self.mirror_queue is None:
+            return
+        try:
+            payload = bytes(msg.get_msgbuf())
+            if not payload:
+                return
+            self.mirror_queue.put_nowait(payload)
+        except Exception:
+            # Mission Planner mirroring is best-effort and must never block or
+            # disturb the authoritative FC RX path.
+            pass
 
     def _check_heartbeat_loss(self):
         v = self.state.vehicle
@@ -59,6 +74,9 @@ class MavlinkRxWorker(threading.Thread):
             msg_type = msg.get_type()
             if msg_type == "BAD_DATA":
                 continue
+
+            # Mirror the exact received frame before higher-level parsing.
+            self._mirror_packet(msg)
 
             v = self.state.vehicle
             v.mark_message(msg_type, now)
@@ -129,6 +147,11 @@ class MavlinkRxWorker(threading.Thread):
                 remaining = getattr(msg, "battery_remaining", -1)
                 if remaining >= 0:
                     v.battery_remaining = int(remaining)
+
+                current = getattr(msg, "current_battery", -1)
+                if current is not None and int(current) >= 0:
+                    # MAVLink SYS_STATUS current_battery is in 10 mA units.
+                    v.battery_current_a = float(current) / 100.0
 
             elif msg_type == "GPS_RAW_INT":
                 sat = getattr(msg, "satellites_visible", 255)
