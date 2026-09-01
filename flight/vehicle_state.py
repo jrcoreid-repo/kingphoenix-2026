@@ -47,12 +47,19 @@ class VehicleState:
 
     # Power / GPS / mission
     battery_v: float | None = None
+    battery_current_a: float | None = None
     battery_remaining: int | None = None
     gps_satellites: int | None = None
     gps_fix_type: int | None = None
+    gps_lat_deg: float | None = None
+    gps_lon_deg: float | None = None
+    gps_alt_m: float | None = None
+    gps_hdop: float | None = None
+    gps_vdop: float | None = None
+    gps_cog_deg: float | None = None
     current_mission_item: int | None = None
 
-    # Rangefinder / LiDAR state (V1.5)
+    # Rangefinder / LiDAR state
     rangefinder_distance_m: float | None = None
     rangefinder_min_m: float | None = None
     rangefinder_max_m: float | None = None
@@ -93,13 +100,11 @@ class VehicleState:
         name = str(message_name).upper()
         now = int(timestamp_ns or time.monotonic_ns())
         self.message_last_ns[name] = now
-
         q = self.message_rx_times.get(name)
         if q is None:
             q = deque(maxlen=256)
             self.message_rx_times[name] = q
         q.append(now)
-
         cutoff = now - int(5e9)
         while q and q[0] < cutoff:
             q.popleft()
@@ -130,88 +135,51 @@ class VehicleState:
             return "MISSING"
         return "FRESH" if age <= float(max_age_s) else "STALE"
 
-    def record_command_ack(
-        self,
-        command: int,
-        result: int,
-        source_system: int,
-        source_component: int,
-        timestamp_ns: int | None = None,
-        progress: int | None = None,
-        result_param2: int | None = None,
-    ) -> AckRecord:
-        record = AckRecord(
-            command=int(command),
-            result=int(result),
-            source_system=int(source_system),
-            source_component=int(source_component),
-            timestamp_ns=int(timestamp_ns or time.monotonic_ns()),
-            progress=None if progress is None else int(progress),
-            result_param2=None if result_param2 is None else int(result_param2),
-        )
+    def record_command_ack(self, command: int, result: int, source_system: int,
+                           source_component: int, timestamp_ns: int | None = None,
+                           progress: int | None = None,
+                           result_param2: int | None = None) -> AckRecord:
+        record = AckRecord(int(command), int(result), int(source_system), int(source_component),
+                           int(timestamp_ns or time.monotonic_ns()),
+                           None if progress is None else int(progress),
+                           None if result_param2 is None else int(result_param2))
         with self.ack_lock:
             self.latest_command_ack = record
             self.command_ack_history.append(record)
         return record
 
-    def find_command_ack(
-        self,
-        command: int,
-        since_ns: int,
-        source_system: int | None = None,
-        source_component: int | None = None,
-    ) -> AckRecord | None:
+    def find_command_ack(self, command: int, since_ns: int,
+                         source_system: int | None = None,
+                         source_component: int | None = None) -> AckRecord | None:
         with self.ack_lock:
             for ack in reversed(self.command_ack_history):
-                if ack.timestamp_ns < int(since_ns):
-                    break
-                if ack.command != int(command):
-                    continue
-                if source_system is not None and ack.source_system != int(source_system):
-                    continue
-                if source_component is not None and ack.source_component != int(source_component):
-                    continue
+                if ack.timestamp_ns < int(since_ns): break
+                if ack.command != int(command): continue
+                if source_system is not None and ack.source_system != int(source_system): continue
+                if source_component is not None and ack.source_component != int(source_component): continue
                 return ack
         return None
 
-    def record_status_text(
-        self,
-        text: str,
-        severity: int,
-        source_system: int,
-        source_component: int,
-        timestamp_ns: int | None = None,
-        message_id: int | None = None,
-        chunk_seq: int | None = None,
-    ) -> StatusTextRecord:
-        record = StatusTextRecord(
-            text=str(text).strip(),
-            severity=int(severity),
-            source_system=int(source_system),
-            source_component=int(source_component),
-            timestamp_ns=int(timestamp_ns or time.monotonic_ns()),
-            message_id=None if message_id is None else int(message_id),
-            chunk_seq=None if chunk_seq is None else int(chunk_seq),
-        )
+    def record_status_text(self, text: str, severity: int, source_system: int,
+                           source_component: int, timestamp_ns: int | None = None,
+                           message_id: int | None = None,
+                           chunk_seq: int | None = None) -> StatusTextRecord:
+        record = StatusTextRecord(str(text).strip(), int(severity), int(source_system), int(source_component),
+                                  int(timestamp_ns or time.monotonic_ns()),
+                                  None if message_id is None else int(message_id),
+                                  None if chunk_seq is None else int(chunk_seq))
         with self.status_text_lock:
             self.status_text_history.append(record)
         return record
 
-    def recent_status_texts(
-        self,
-        since_ns: int = 0,
-        source_system: int | None = None,
-        source_component: int | None = None,
-    ):
+    def recent_status_texts(self, since_ns: int = 0, source_system: int | None = None,
+                            source_component: int | None = None):
         with self.status_text_lock:
             out = []
             for item in self.status_text_history:
-                if item.timestamp_ns < int(since_ns):
-                    continue
-                if source_system is not None and item.source_system != int(source_system):
-                    continue
-                if source_component is not None and item.source_component != int(source_component):
-                    continue
+                if item.timestamp_ns < int(since_ns): continue
+                if source_system is not None and item.source_system != int(source_system): continue
+                if source_component is not None and item.source_component != int(source_component): continue
                 out.append(item)
             return out
 
@@ -221,21 +189,15 @@ class VehicleState:
         return (time.monotonic_ns() - self.rangefinder_last_ns) / 1e9
 
     def rangefinder_is_fresh(self, max_age_s: float = 0.15) -> bool:
-        return (
-            self.rangefinder_distance_m is not None
-            and self.rangefinder_distance_m > 0.0
-            and self.rangefinder_age_s() <= float(max_age_s)
-        )
+        return (self.rangefinder_distance_m is not None and self.rangefinder_distance_m > 0.0
+                and self.rangefinder_age_s() <= float(max_age_s))
 
     def rangefinder_altitude_m(self, max_age_s: float = 0.15) -> float | None:
-        if not self.rangefinder_is_fresh(max_age_s):
-            return None
+        if not self.rangefinder_is_fresh(max_age_s): return None
         return self.rangefinder_distance_m
 
     def altitude_reference(self, rangefinder_max_age_s: float = 0.15):
         rf = self.rangefinder_altitude_m(rangefinder_max_age_s)
-        if rf is not None:
-            return rf, "RANGEFINDER", True
-        if self.relative_alt_m is not None:
-            return self.relative_alt_m, "REL_ALT_FALLBACK", False
+        if rf is not None: return rf, "RANGEFINDER", True
+        if self.relative_alt_m is not None: return self.relative_alt_m, "REL_ALT_FALLBACK", False
         return None, "NONE", False
