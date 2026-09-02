@@ -7,20 +7,32 @@ echo ============================================================
 echo  KINGPHOENIX GCS - PORTABLE WINDOWS BUILD
 echo ============================================================
 
-where py >nul 2>nul
+REM Prefer the currently active Python interpreter. This allows the script to
+REM run directly from an already-active project .venv instead of requiring the
+REM Windows py launcher to have a specific 3.11/3.12 installation registered.
+where python >nul 2>nul
 if errorlevel 1 (
-  echo [ERROR] Python launcher "py" not found.
-  echo Install Python 3.11 or 3.12 x64 first.
+  echo [ERROR] "python" not found in PATH.
+  echo Activate your project virtual environment first, or install Python x64.
   pause
   exit /b 1
 )
 
+for /f "delims=" %%P in ('python -c "import sys; print(sys.executable)"') do set "SOURCE_PYTHON=%%P"
+for /f "delims=" %%V in ('python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set "SOURCE_VERSION=%%V"
+
+echo [BUILD] Source Python: %SOURCE_PYTHON%
+echo [BUILD] Python version: %SOURCE_VERSION%
+
+REM Build into a dedicated environment so packaging dependencies do not pollute
+REM the normal GCS runtime environment. It is created using the Python that is
+REM already active in this terminal.
 if not exist ".venv-gcs-build\Scripts\python.exe" (
-  echo [BUILD] Creating isolated build environment...
-  py -3.12 -m venv .venv-gcs-build 2>nul
-  if errorlevel 1 py -3.11 -m venv .venv-gcs-build
+  echo [BUILD] Creating isolated build environment from active Python...
+  "%SOURCE_PYTHON%" -m venv .venv-gcs-build
   if errorlevel 1 (
-    echo [ERROR] Could not create Python 3.11/3.12 environment.
+    echo [ERROR] Could not create .venv-gcs-build from the active Python runtime.
+    echo Try: python -m venv .venv-gcs-build
     pause
     exit /b 1
   )
