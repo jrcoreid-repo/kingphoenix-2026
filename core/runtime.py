@@ -96,7 +96,13 @@ class KingphoenixRuntime:
             self.stop_event,
         )
         self.safety = SafetyManager(self.state, self.events, self.stop_event)
-        self.gcs = GcsServer(self.state, self.events, self.waypoints, self.stop_event)
+        self.gcs = GcsServer(
+            self.state,
+            self.events,
+            self.waypoints,
+            self.stop_event,
+            command_manager=self.command,
+        )
         self.mp_gateway = MissionPlannerGateway(
             self.state,
             self.tx,
@@ -141,7 +147,7 @@ class KingphoenixRuntime:
         ]
 
     def start(self):
-        print("[RUNTIME] starting Kingphoenix V2.2.2 MAVLink Networking Bench")
+        print("[RUNTIME] starting Kingphoenix V2.3.0 GCS Bench Control")
         with self.state.lock:
             self.state.system["running"] = True
             self.state.system["startup_state"] = "INITIALIZING"
@@ -153,8 +159,9 @@ class KingphoenixRuntime:
             worker.start()
 
         # Vision remains diagnostic-capable even when AI readiness fails.
-        # Flight movement TX remains disabled; only explicit bench VCT commands
-        # and filtered Mission Planner RTCM may write to the FC.
+        # V2.3 permits only explicit GCS bench ARM/DISARM and DISARMED mode
+        # changes through CommandManager/VCT. Movement/takeoff/mission velocity
+        # TX remain disabled.
         self.vision_stream.start()
 
         with self.state.lock:
