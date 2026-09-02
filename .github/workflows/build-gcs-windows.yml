@@ -1,0 +1,63 @@
+name: Build Kingphoenix GCS Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - 'gcs/**'
+      - '.github/workflows/build-gcs-windows.yml'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: gcs/requirements-gcs-build.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r gcs/requirements-gcs-build.txt
+
+      - name: Build portable EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --windowed `
+            --name Kingphoenix-GCS `
+            --paths gcs `
+            --collect-all dearpygui `
+            --collect-all av `
+            --collect-all cv2 `
+            --collect-all numpy `
+            gcs/kingphoenix_gcs_app.py
+
+      - name: Smoke check artifact
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'dist/Kingphoenix-GCS/Kingphoenix-GCS.exe')) {
+            throw 'Kingphoenix-GCS.exe was not created'
+          }
+          Get-ChildItem -Recurse dist/Kingphoenix-GCS | Select-Object FullName,Length
+
+      - name: Upload portable Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kingphoenix-GCS-Windows-Portable
+          path: dist/Kingphoenix-GCS/
+          if-no-files-found: error
+          retention-days: 14
