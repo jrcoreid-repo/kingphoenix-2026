@@ -1,0 +1,7 @@
+{
+  "nominal_waypoint_alt_m": 1.2,
+  "takeoff_min_alt_m": 0.5,
+  "takeoff_max_alt_m": 3.0,
+  "takeoff_verify_ratio": 0.8,
+  "takeoff_state_timeout_s": 10.0
+}
