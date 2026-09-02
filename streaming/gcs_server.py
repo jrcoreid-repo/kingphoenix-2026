@@ -13,12 +13,24 @@ from config import load_json
 class GcsServer(threading.Thread):
     daemon = True
 
-    def __init__(self, state, events, waypoints, stop_event):
+    # Bench-safe mode list exposed to the GCS. Mode changes from this control
+    # path are intentionally required to be DISARMED by CommandManager.
+    BENCH_MODE_ALLOWLIST = {
+        "STABILIZE",
+        "ALT_HOLD",
+        "LOITER",
+        "GUIDED",
+        "AUTO",
+        "LAND",
+    }
+
+    def __init__(self, state, events, waypoints, stop_event, command_manager=None):
         super().__init__(name="GCSServer")
         self.state = state
         self.events = events
         self.waypoints = waypoints
         self.stop_event = stop_event
+        self.command = command_manager
 
         cfg = load_json("system.json")
         self.stream_cfg = cfg["stream"]
@@ -40,7 +52,8 @@ class GcsServer(threading.Thread):
             "active_ai_camera": self.state.vision.get(
                 "active_ai_camera", "front"
             ),
-            "version": "2.1.6",
+            "version": "2.3.0",
+            "bench_control": self.command is not None,
         }
 
     def _mark_disconnected(self, reason):
@@ -66,12 +79,56 @@ class GcsServer(threading.Thread):
                 f"HEARTBEAT TIMEOUT {age_s:.1f}s > {self.gcs_timeout_s:.1f}s"
             )
 
+    def _touch_gcs_heartbeat(self):
+        """Keep the session alive while a verified command is executing."""
+        self.last_gcs_heartbeat_ns = time.monotonic_ns()
+        self.state.system["gcs_connected"] = True
+
+    @staticmethod
+    def _vct_data(result):
+        return {
+            "outcome": getattr(result, "outcome", "FAILED"),
+            "attempts": int(getattr(result, "attempts", 0)),
+            "reason": str(getattr(result, "reason", "")),
+            "ack_result": getattr(result, "ack_result", None),
+            "ack_source": getattr(result, "ack_source", None),
+            "elapsed_s": float(getattr(result, "elapsed_s", 0.0)),
+        }
+
+    def _run_bench_command(self, tx, label, fn):
+        if self.command is None:
+            return ack(tx, False, "FC COMMAND BACKEND UNAVAILABLE")
+
+        self._touch_gcs_heartbeat()
+        print(f"[GCS-CMD] {label} requested")
+        try:
+            result = fn()
+        except Exception as exc:
+            self._touch_gcs_heartbeat()
+            print(f"[GCS-CMD] {label} exception: {exc}")
+            return ack(tx, False, f"{label} EXCEPTION: {exc}")
+
+        self._touch_gcs_heartbeat()
+        data = self._vct_data(result)
+        ok = bool(getattr(result, "ok", False))
+        message = (
+            f"{label} VERIFIED"
+            if ok
+            else f"{label} FAILED: {data['reason']}"
+        )
+        print(
+            f"[GCS-CMD] {label} ok={ok} outcome={data['outcome']} "
+            f"attempts={data['attempts']} reason={data['reason']}"
+        )
+        return ack(tx, ok, message, data=data)
+
     def run(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("0.0.0.0", self.port))
         sock.settimeout(0.2)
         print(f"[GCS] control UDP :{self.port}")
         print(f"[GCS] heartbeat watchdog : {self.gcs_timeout_s:.1f}s")
+        print("[GCS] V2.3 bench control: ARM/DISARM + DISARMED mode select")
 
         while not self.stop_event.is_set():
             try:
@@ -140,13 +197,37 @@ class GcsServer(threading.Thread):
 
         if kind == "HEARTBEAT":
             if self.gcs_endpoint is not None:
-                self.last_gcs_heartbeat_ns = time.monotonic_ns()
-                self.state.system["gcs_connected"] = True
+                self._touch_gcs_heartbeat()
             return None
 
         if kind == "DISCONNECT":
             self._mark_disconnected("GCS GRACEFUL CLOSE")
             return {"type": "DISCONNECT_ACK", "ok": True}
+
+        # ------------------------------------------------------------
+        # V2.3 guarded FC command path.
+        # These commands use the existing CommandManager/VCT path. Movement,
+        # takeoff and mission velocity TX remain disabled.
+        # ------------------------------------------------------------
+        if kind == "ARM":
+            if not bool(msg.get("bench_confirmed", False)):
+                return ack(tx, False, "ARM BLOCKED: bench confirmation missing")
+            return self._run_bench_command(tx, "ARM", self.command.arm if self.command else lambda: None)
+
+        if kind == "DISARM":
+            return self._run_bench_command(tx, "DISARM", self.command.disarm if self.command else lambda: None)
+
+        if kind == "SET_MODE":
+            mode = str(msg.get("mode") or "").upper().strip()
+            if mode not in self.BENCH_MODE_ALLOWLIST:
+                return ack(tx, False, f"MODE BLOCKED: {mode or '--'} not in bench allowlist")
+            if self.command is None:
+                return ack(tx, False, "FC COMMAND BACKEND UNAVAILABLE")
+            return self._run_bench_command(
+                tx,
+                f"MODE {mode}",
+                lambda: self.command.set_mode(mode, require_disarmed=True),
+            )
 
         if kind == "UNLOCK_EDIT":
             self.waypoints.unlock()
