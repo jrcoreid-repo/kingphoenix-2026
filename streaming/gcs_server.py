@@ -52,8 +52,9 @@ class GcsServer(threading.Thread):
             "active_ai_camera": self.state.vision.get(
                 "active_ai_camera", "front"
             ),
-            "version": "2.3.0",
+            "version": "2.3.4",
             "bench_control": self.command is not None,
+            "live_preflight": True,
         }
 
     def _mark_disconnected(self, reason):
@@ -122,6 +123,107 @@ class GcsServer(threading.Thread):
         )
         return ack(tx, ok, message, data=data)
 
+    @staticmethod
+    def _copy_check(check, fallback_status="WARN", fallback_detail="unavailable"):
+        if not isinstance(check, dict):
+            return {"status": fallback_status, "detail": fallback_detail}
+        return {
+            "status": str(check.get("status", fallback_status)).upper(),
+            "detail": str(check.get("detail", fallback_detail)),
+        }
+
+    def _live_preflight_snapshot(self):
+        """Return one point-in-time readiness snapshot directly from Pi state.
+
+        This is intentionally read-only. It does not depend on video metadata
+        arriving at the GCS, so PRE-FLIGHT can distinguish an actually missing
+        FC/Pi signal from stale/mock GUI values.
+        """
+        v = self.state.vehicle
+        with self.state.lock:
+            readiness = dict(self.state.system.get("readiness") or {})
+            pi_health = dict(self.state.system.get("pi_health") or {})
+            front = dict(self.state.vision.get("front") or {})
+            bottom = dict(self.state.vision.get("bottom") or {})
+            startup_state = str(self.state.system.get("startup_state", "UNKNOWN"))
+            ready_for_mission = bool(self.state.system.get("ready_for_mission", False))
+
+        ready_checks = readiness.get("checks") or {}
+        pi_checks = pi_health.get("checks") or {}
+
+        hb_age = v.heartbeat_age_s()
+        connected = bool(v.connected)
+        hb_fresh = connected and hb_age <= 2.5
+
+        # Vehicle-state freshness uses real FC message ages. HEARTBEAT is the
+        # hard minimum; position/power messages are reported in detail when present.
+        gpos_age = v.message_age_s("GLOBAL_POSITION_INT")
+        sys_age = v.message_age_s("SYS_STATUS")
+        vehicle_fresh = hb_fresh and (gpos_age < 1.0 or sys_age < 1.5)
+
+        checks = {
+            "MAVLink Link": {
+                "status": "PASS" if connected else "FAIL",
+                "detail": "FC link connected" if connected else "FC link NOT connected",
+            },
+            "FC Heartbeat": {
+                "status": "PASS" if hb_fresh else "FAIL",
+                "detail": f"age {hb_age:.2f}s" if hb_age != float("inf") else "heartbeat missing",
+            },
+            "Vehicle State": {
+                "status": "PASS" if vehicle_fresh else "FAIL",
+                "detail": (
+                    f"GLOBAL {gpos_age:.2f}s / SYS {sys_age:.2f}s"
+                    if connected else "no live FC state"
+                ),
+            },
+            "GPS": self._copy_check(ready_checks.get("gps"), "FAIL", "GPS readiness unavailable"),
+            "LiDAR / Rangefinder": self._copy_check(ready_checks.get("lidar"), "FAIL", "LiDAR readiness unavailable"),
+            "Front Camera": self._copy_check(ready_checks.get("front_camera"), "FAIL", "front camera readiness unavailable"),
+            "Bottom Camera": self._copy_check(ready_checks.get("bottom_camera"), "FAIL", "bottom camera readiness unavailable"),
+            "YOLO26 / Hailo": self._copy_check(ready_checks.get("hailo_ai"), "FAIL", "Hailo readiness unavailable"),
+            # Mission content is intentionally not promoted to PASS until its
+            # loader/strategy validation is wired into the authoritative state.
+            "Mission File": {
+                "status": "WARN",
+                "detail": "TEST STATUS / validation not integrated yet",
+            },
+            "Strategy Data": {
+                "status": "WARN",
+                "detail": "TEST STATUS / LEFT-RIGHT validation not integrated yet",
+            },
+            "Battery": {
+                "status": "PASS" if connected and v.battery_v is not None else "FAIL",
+                "detail": (
+                    f"{float(v.battery_v):.2f} V / {v.battery_remaining}%"
+                    if v.battery_v is not None else "battery telemetry unavailable"
+                ),
+            },
+            "Pi Thermal": self._copy_check(pi_checks.get("pi_thermal"), "FAIL", "Pi health unavailable"),
+            "Pi Power": self._copy_check(pi_checks.get("pi_power"), "FAIL", "Pi health unavailable"),
+            "Pi Throttling": self._copy_check(pi_checks.get("pi_throttling"), "FAIL", "Pi health unavailable"),
+            "Pi CPU Load": self._copy_check(pi_checks.get("pi_cpu"), "FAIL", "Pi health unavailable"),
+            "Pi RAM": self._copy_check(pi_checks.get("pi_ram"), "FAIL", "Pi health unavailable"),
+            "Pi Disk": self._copy_check(pi_checks.get("pi_disk"), "FAIL", "Pi health unavailable"),
+        }
+
+        return {
+            "timestamp_ns": time.monotonic_ns(),
+            "startup_state": startup_state,
+            "ready_for_mission": ready_for_mission,
+            "readiness_status": readiness.get("status", "UNKNOWN"),
+            "failed_critical": list(readiness.get("failed_critical") or []),
+            "checks": checks,
+            "raw": {
+                "connected": connected,
+                "heartbeat_age_s": None if hb_age == float("inf") else hb_age,
+                "battery_v": v.battery_v,
+                "battery_remaining": v.battery_remaining,
+                "front_video_state": front.get("video_state"),
+                "bottom_video_state": bottom.get("video_state"),
+            },
+        }
+
     def run(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("0.0.0.0", self.port))
@@ -129,6 +231,7 @@ class GcsServer(threading.Thread):
         print(f"[GCS] control UDP :{self.port}")
         print(f"[GCS] heartbeat watchdog : {self.gcs_timeout_s:.1f}s")
         print("[GCS] V2.3 bench control: ARM/DISARM + DISARMED mode select")
+        print("[GCS] V2.3.4 live PRE-FLIGHT request endpoint enabled")
 
         while not self.stop_event.is_set():
             try:
@@ -203,6 +306,15 @@ class GcsServer(threading.Thread):
         if kind == "DISCONNECT":
             self._mark_disconnected("GCS GRACEFUL CLOSE")
             return {"type": "DISCONNECT_ACK", "ok": True}
+
+        if kind == "GET_PREFLIGHT_STATUS":
+            self._touch_gcs_heartbeat()
+            return ack(
+                tx,
+                True,
+                "LIVE PREFLIGHT SNAPSHOT",
+                data=self._live_preflight_snapshot(),
+            )
 
         # ------------------------------------------------------------
         # V2.3 guarded FC command path.
