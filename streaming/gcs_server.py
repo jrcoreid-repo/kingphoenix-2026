@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import socket
 import threading
@@ -34,12 +35,17 @@ class GcsServer(threading.Thread):
 
         cfg = load_json("system.json")
         self.stream_cfg = cfg["stream"]
+        self.mp_cfg = cfg.get("mission_planner_gateway", {})
         self.port = int(self.stream_cfg["control_port"])
+        self.mp_destination_port = int(self.mp_cfg.get("destination_port", 14555))
         self.last_gcs_heartbeat_ns = 0
         self.gcs_endpoint = None
         self.gcs_timeout_s = float(self.stream_cfg.get("gcs_timeout_s", 3.0))
 
     def _hello_ack(self):
+        with self.state.lock:
+            mp_status = dict(self.state.system.get("mission_planner_gateway") or {})
+            mp_override = dict(self.state.system.get("mission_planner_destination_override") or {})
         return {
             "type": "HELLO_ACK",
             "ok": True,
@@ -52,9 +58,11 @@ class GcsServer(threading.Thread):
             "active_ai_camera": self.state.vision.get(
                 "active_ai_camera", "front"
             ),
-            "version": "2.3.4",
+            "version": "2.3.5",
             "bench_control": self.command is not None,
             "live_preflight": True,
+            "mission_planner_gateway": mp_status,
+            "mission_planner_destination_override": mp_override,
         }
 
     def _mark_disconnected(self, reason):
@@ -67,6 +75,7 @@ class GcsServer(threading.Thread):
         if was_connected:
             print(f"[CONTROL] GCS DISCONNECTED | reason={reason}")
             print("[CONTROL] Pi runtime remains ACTIVE and waiting for GCS reconnect")
+            print("[CONTROL] Mission Planner destination override remains cached in Pi state")
 
     def _check_gcs_timeout(self):
         if not self.state.system.get("gcs_connected", False):
@@ -130,6 +139,70 @@ class GcsServer(threading.Thread):
         return {
             "status": str(check.get("status", fallback_status)).upper(),
             "detail": str(check.get("detail", fallback_detail)),
+        }
+
+    @staticmethod
+    def _validated_mp_ip(value):
+        text = str(value or "").strip()
+        try:
+            ip = ipaddress.ip_address(text)
+        except ValueError:
+            return None, "invalid IPv4 address"
+        if ip.version != 4:
+            return None, "IPv4 required"
+        if ip.is_unspecified or ip.is_multicast or text == "255.255.255.255":
+            return None, "unicast IPv4 required"
+        return str(ip), None
+
+    def _set_mp_destination(self, tx, msg):
+        ip, error = self._validated_mp_ip(msg.get("ip"))
+        if error:
+            return ack(tx, False, f"MISSION PLANNER IP REJECTED: {error}")
+
+        try:
+            port = int(msg.get("port", self.mp_destination_port))
+        except Exception:
+            return ack(tx, False, "MISSION PLANNER PORT REJECTED")
+        if not (1 <= port <= 65535):
+            return ack(tx, False, "MISSION PLANNER PORT OUT OF RANGE")
+
+        override = {
+            "ip": ip,
+            "port": port,
+            "set_by": "GCS",
+            "timestamp_ns": time.monotonic_ns(),
+        }
+        with self.state.lock:
+            self.state.system["mission_planner_destination_override"] = override
+
+        print(f"[MP-GATEWAY] DESTINATION SET BY GCS -> {ip}:{port}")
+        return ack(
+            tx,
+            True,
+            f"MISSION PLANNER DESTINATION {ip}:{port}",
+            data={
+                "ip": ip,
+                "port": port,
+                "policy": str(self.mp_cfg.get("policy", "RACE")).upper(),
+                "inbound": "GPS_RTCM_DATA_ONLY" if str(self.mp_cfg.get("policy", "RACE")).upper() == "RACE" else "MAINTENANCE",
+            },
+        )
+
+    def _clear_mp_destination(self, tx):
+        with self.state.lock:
+            self.state.system.pop("mission_planner_destination_override", None)
+        print("[MP-GATEWAY] GCS runtime destination override CLEARED")
+        return ack(tx, True, "MISSION PLANNER DESTINATION AUTO")
+
+    def _mp_gateway_status(self):
+        with self.state.lock:
+            gateway = dict(self.state.system.get("mission_planner_gateway") or {})
+            override = dict(self.state.system.get("mission_planner_destination_override") or {})
+        return {
+            "gateway": gateway,
+            "override": override,
+            "configured_port": self.mp_destination_port,
+            "policy": str(self.mp_cfg.get("policy", "RACE")).upper(),
         }
 
     def _live_preflight_snapshot(self):
@@ -232,6 +305,7 @@ class GcsServer(threading.Thread):
         print(f"[GCS] heartbeat watchdog : {self.gcs_timeout_s:.1f}s")
         print("[GCS] V2.3 bench control: ARM/DISARM + DISARMED mode select")
         print("[GCS] V2.3.4 live PRE-FLIGHT request endpoint enabled")
+        print("[GCS] V2.3.5 Mission Planner destination control enabled")
 
         while not self.stop_event.is_set():
             try:
@@ -315,6 +389,18 @@ class GcsServer(threading.Thread):
                 "LIVE PREFLIGHT SNAPSHOT",
                 data=self._live_preflight_snapshot(),
             )
+
+        if kind == "SET_MP_DESTINATION":
+            self._touch_gcs_heartbeat()
+            return self._set_mp_destination(tx, msg)
+
+        if kind == "CLEAR_MP_DESTINATION":
+            self._touch_gcs_heartbeat()
+            return self._clear_mp_destination(tx)
+
+        if kind == "GET_MP_GATEWAY_STATUS":
+            self._touch_gcs_heartbeat()
+            return ack(tx, True, "MISSION PLANNER GATEWAY STATUS", data=self._mp_gateway_status())
 
         # ------------------------------------------------------------
         # V2.3 guarded FC command path.
