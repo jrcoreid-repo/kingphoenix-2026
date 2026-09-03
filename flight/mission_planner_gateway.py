@@ -12,10 +12,9 @@ class MissionPlannerGateway(threading.Thread):
     Network contract:
       - ``bind_ip`` is only the local receive/listen address on the Raspberry Pi.
         ``0.0.0.0`` is valid here because it means "listen on every Pi interface".
-      - outbound telemetry is always sent to a *real destination IP*.
-        With ``destination_ip=AUTO_GCS`` the destination is learned from the
-        Kingphoenix GCS HELLO peer (normally the same laptop running Mission
-        Planner), then telemetry is sent to ``<GCS laptop IP>:destination_port``.
+      - outbound telemetry is always sent to a real destination IP.
+      - the destination can be changed at runtime from the Kingphoenix GCS, so
+        the Mission Planner laptop may be different from the GCS laptop.
 
     FC -> Mission Planner:
       Mirrored telemetry from the sole FC RX path. The RX worker places raw
@@ -28,12 +27,15 @@ class MissionPlannerGateway(threading.Thread):
       shared MavlinkTx lock).
 
     Destination precedence:
-      1. Explicit configured destination IP (when not AUTO_GCS)
-      2. Kingphoenix GCS HELLO peer IP
-      3. Learned Mission Planner peer as fallback
+      1. Runtime destination explicitly SET from Kingphoenix GCS
+      2. Explicit configured destination IP (when not AUTO_GCS)
+      3. Kingphoenix GCS HELLO peer IP
+      4. Learned Mission Planner peer as fallback
 
-    This avoids the old UDP chicken-and-egg problem where the gateway waited
-    for an inbound Mission Planner packet before it had any outbound target.
+    In RACE mode, when a destination is known and strict source filtering is
+    enabled, inbound packets are accepted only from that destination IP. This
+    prevents another host on the LAN from injecting RTCM or other traffic into
+    the FC path.
     """
 
     daemon = True
@@ -53,6 +55,7 @@ class MissionPlannerGateway(threading.Thread):
         self.destination_ip = str(self.cfg.get("destination_ip", "AUTO_GCS"))
         self.policy = str(self.cfg.get("policy", "RACE")).upper()
         self.learn_peer = bool(self.cfg.get("learn_peer", True))
+        self.strict_inbound_source = bool(self.cfg.get("strict_inbound_source", True))
 
         self.peer = None
         self.sock = None
@@ -62,7 +65,25 @@ class MissionPlannerGateway(threading.Thread):
         self._tx_packets = 0
         self._tx_bytes = 0
         self._rtcm_packets = 0
+        self._blocked_sender_packets = 0
+        self._blocked_message_packets = 0
         self._last_diag_s = 0.0
+        self._last_block_log_s = 0.0
+
+    def _runtime_destination(self):
+        with self.state.lock:
+            override = self.state.system.get("mission_planner_destination_override")
+
+        if not isinstance(override, dict):
+            return None
+        ip = str(override.get("ip") or "").strip()
+        if not ip:
+            return None
+        try:
+            port = int(override.get("port", self.destination_port))
+        except Exception:
+            port = self.destination_port
+        return (ip, port)
 
     def _gcs_destination(self):
         with self.state.lock:
@@ -80,18 +101,22 @@ class MissionPlannerGateway(threading.Thread):
         return None
 
     def _current_destination(self):
-        # Explicit destination is deterministic and always wins.
+        # Runtime GCS-set destination is the intended field workflow and wins.
+        runtime_destination = self._runtime_destination()
+        if runtime_destination is not None:
+            return runtime_destination, "GCS_SET"
+
+        # Explicit config is deterministic and wins over auto discovery.
         if self.destination_ip and self.destination_ip.upper() != "AUTO_GCS":
             return (self.destination_ip, self.destination_port), "CONFIG"
 
-        # AUTO_GCS intentionally prefers the already-proven GCS HELLO peer.
-        # This makes the behavior equivalent to MAVProxy --out=udp:<LAPTOP_IP>:14555.
+        # AUTO_GCS remains a convenient fallback when GCS and MP share a laptop.
         gcs_destination = self._gcs_destination()
         if gcs_destination is not None:
             return gcs_destination, "GCS_HELLO"
 
-        # Peer learning is fallback only. It must never override a valid GCS
-        # destination because arbitrary UDP traffic should not hijack telemetry.
+        # Peer learning is fallback only and can bootstrap a headless session
+        # after a valid policy-allowed packet arrives from Mission Planner.
         if self.peer is not None:
             return self.peer, "MP_PEER"
 
@@ -106,6 +131,7 @@ class MissionPlannerGateway(threading.Thread):
             self.policy,
             destination,
             destination_source,
+            self.strict_inbound_source,
         )
         if signature == self._last_status:
             return
@@ -118,11 +144,16 @@ class MissionPlannerGateway(threading.Thread):
                 "policy": self.policy,
                 "bind": f"{self.bind_ip}:{self.port}",
                 "destination": None if destination is None else f"{destination[0]}:{destination[1]}",
+                "destination_ip": None if destination is None else destination[0],
+                "destination_port": None if destination is None else destination[1],
                 "destination_source": destination_source,
                 "peer": None if self.peer is None else f"{self.peer[0]}:{self.peer[1]}",
+                "strict_inbound_source": self.strict_inbound_source,
                 "tx_packets": self._tx_packets,
                 "tx_bytes": self._tx_bytes,
                 "rtcm_packets": self._rtcm_packets,
+                "blocked_sender_packets": self._blocked_sender_packets,
+                "blocked_message_packets": self._blocked_message_packets,
             }
 
         destination_text = "--" if destination is None else f"{destination[0]}:{destination[1]}"
@@ -143,7 +174,7 @@ class MissionPlannerGateway(threading.Thread):
         if destination is None:
             self._publish_status(
                 "WAITING_DESTINATION",
-                "connect Kingphoenix GCS or configure an explicit laptop IP",
+                "set Mission Planner IP from GCS, connect GCS, or inject valid RTCM to learn peer",
             )
         else:
             self._publish_status(
@@ -166,9 +197,40 @@ class MissionPlannerGateway(threading.Thread):
             return msg_type not in {"BAD_DATA"}
         return msg_type == "GPS_RTCM_DATA"
 
+    def _sender_allowed(self, addr):
+        if not self.strict_inbound_source:
+            return True
+
+        destination, source = self._current_destination()
+        if destination is None:
+            # No trusted destination yet: policy filtering still applies and a
+            # valid RTCM packet may bootstrap peer learning.
+            return True
+
+        expected_ip = str(destination[0])
+        sender_ip = str(addr[0])
+        if sender_ip == expected_ip:
+            return True
+
+        self._blocked_sender_packets += 1
+        now = time.monotonic()
+        if now - self._last_block_log_s >= 2.0:
+            self._last_block_log_s = now
+            print(
+                f"[MP-GATEWAY] BLOCKED sender={sender_ip} expected={expected_ip} "
+                f"dest_source={source}"
+            )
+        return False
+
     def _forward_from_mp(self, data, addr):
+        if not self._sender_allowed(addr):
+            return
+
         messages = self._parse_datagram(data)
         allowed = [msg for msg in messages if self._allow_from_mp(msg.get_type())]
+        blocked_count = max(0, len(messages) - len(allowed))
+        if blocked_count:
+            self._blocked_message_packets += blocked_count
 
         # Learn only from a datagram that contains traffic allowed by the
         # current policy. In RACE mode this means a real RTCM packet.
@@ -214,16 +276,23 @@ class MissionPlannerGateway(threading.Thread):
             status = dict(self.state.system.get("mission_planner_gateway") or {})
             status.update({
                 "destination": f"{destination[0]}:{destination[1]}",
+                "destination_ip": destination[0],
+                "destination_port": destination[1],
                 "destination_source": source,
+                "strict_inbound_source": self.strict_inbound_source,
                 "tx_packets": self._tx_packets,
                 "tx_bytes": self._tx_bytes,
                 "rtcm_packets": self._rtcm_packets,
+                "blocked_sender_packets": self._blocked_sender_packets,
+                "blocked_message_packets": self._blocked_message_packets,
             })
             self.state.system["mission_planner_gateway"] = status
 
         print(
             f"[MP-GATEWAY] FLOW | dest={destination[0]}:{destination[1]} "
-            f"source={source} tx_packets={self._tx_packets} rtcm_rx={self._rtcm_packets}"
+            f"source={source} tx_packets={self._tx_packets} "
+            f"rtcm_rx={self._rtcm_packets} blocked_sender={self._blocked_sender_packets} "
+            f"blocked_msg={self._blocked_message_packets}"
         )
 
     def run(self):
@@ -248,6 +317,7 @@ class MissionPlannerGateway(threading.Thread):
             print("[MP-GATEWAY] RACE inbound policy: GPS_RTCM_DATA only")
         else:
             print("[MP-GATEWAY] MAINTENANCE inbound policy: MAVLink pass-through")
+        print(f"[MP-GATEWAY] strict inbound source: {self.strict_inbound_source}")
 
         self._report_destination_if_changed()
 
