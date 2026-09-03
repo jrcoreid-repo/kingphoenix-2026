@@ -82,12 +82,17 @@ class MavlinkRxWorker(threading.Thread):
                 v.x = float(msg.x); v.y = float(msg.y); v.z = float(msg.z); v.last_position_ns = now
 
             elif msg_type == "GLOBAL_POSITION_INT":
+                # Navigation/EKF vehicle position. Keep this separate from
+                # GPS_RAW_INT so the GCS Current Location cannot be overwritten
+                # by a raw-GPS packet from a different update phase.
                 v.relative_alt_m = float(msg.relative_alt) / 1000.0
                 lat = int(getattr(msg, "lat", 0)); lon = int(getattr(msg, "lon", 0)); alt = int(getattr(msg, "alt", 0))
                 if lat != 0 or lon != 0:
-                    v.gps_lat_deg = lat / 1e7
-                    v.gps_lon_deg = lon / 1e7
-                if alt != 0: v.gps_alt_m = alt / 1000.0
+                    v.global_lat_deg = lat / 1e7
+                    v.global_lon_deg = lon / 1e7
+                    v.global_position_last_ns = now
+                if alt != 0:
+                    v.global_alt_m = alt / 1000.0
 
             elif msg_type == "ATTITUDE":
                 v.roll = float(msg.roll); v.pitch = float(msg.pitch); v.yaw = float(msg.yaw); v.last_attitude_ns = now
@@ -104,6 +109,9 @@ class MavlinkRxWorker(threading.Thread):
                 if current is not None and int(current) >= 0: v.battery_current_a = float(current) / 100.0
 
             elif msg_type == "GPS_RAW_INT":
+                # Raw receiver data: fix/sats/HDOP plus raw coordinates for
+                # diagnostics/fallback. This is intentionally not the primary
+                # Current Location source used by the mission/GCS.
                 sat = getattr(msg, "satellites_visible", 255)
                 if sat != 255: v.gps_satellites = int(sat)
                 fix_type = getattr(msg, "fix_type", None)
