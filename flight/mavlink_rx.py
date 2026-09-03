@@ -152,12 +152,15 @@ class MavlinkRxWorker(threading.Thread):
                 raw_text = getattr(msg, "text", "")
                 if isinstance(raw_text, (bytes, bytearray)): raw_text = raw_text.decode("utf-8", errors="replace")
                 text = str(raw_text).rstrip("\x00").strip()
-                record = v.record_status_text(text=text, severity=int(getattr(msg, "severity", 255)), source_system=src_sys,
+                severity = int(getattr(msg, "severity", 255))
+                record = v.record_status_text(text=text, severity=severity, source_system=src_sys,
                                               source_component=src_comp, timestamp_ns=now, message_id=getattr(msg, "id", None),
                                               chunk_seq=getattr(msg, "chunk_seq", None))
                 self.events.publish("STATUSTEXT", {"text": record.text, "severity": record.severity,
                                                     "source_system": record.source_system, "source_component": record.source_component,
                                                     "timestamp_ns": record.timestamp_ns})
+                if text:
+                    print(f"[FC-MSG] severity={severity} src={src_sys}:{src_comp} | {text}")
 
             elif msg_type == "COMMAND_ACK":
                 record = v.record_command_ack(command=int(msg.command), result=int(msg.result), source_system=src_sys,
