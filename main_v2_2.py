@@ -34,6 +34,8 @@ def _telemetry_snapshot_v223(self):
 
     rf_age = _finite_or_none(v.rangefinder_age_s())
     hb_age = _finite_or_none(v.heartbeat_age_s())
+    gpos_age = _finite_or_none(v.message_age_s("GLOBAL_POSITION_INT"))
+    gps_raw_age = _finite_or_none(v.message_age_s("GPS_RAW_INT"))
 
     return {
         "connected": bool(v.connected),
@@ -45,6 +47,15 @@ def _telemetry_snapshot_v223(self):
         "battery_remaining": v.battery_remaining,
         "relative_alt_m": v.relative_alt_m,
         "groundspeed_mps": v.groundspeed_mps,
+
+        # Primary vehicle/navigation position: EKF output from GLOBAL_POSITION_INT.
+        "global_lat_deg": v.global_lat_deg,
+        "global_lon_deg": v.global_lon_deg,
+        "global_alt_m": v.global_alt_m,
+        "global_position_age_s": gpos_age,
+        "global_position_fresh": bool(gpos_age is not None and gpos_age <= 0.5),
+
+        # Raw receiver GPS remains available for diagnostics and fallback.
         "gps_satellites": v.gps_satellites,
         "gps_fix_type": v.gps_fix_type,
         "gps_lat_deg": v.gps_lat_deg,
@@ -53,6 +64,9 @@ def _telemetry_snapshot_v223(self):
         "gps_hdop": v.gps_hdop,
         "gps_vdop": v.gps_vdop,
         "gps_cog_deg": v.gps_cog_deg,
+        "gps_raw_age_s": gps_raw_age,
+        "gps_raw_fresh": bool(gps_raw_age is not None and gps_raw_age <= 1.0),
+
         "current_mission_item": v.current_mission_item,
         "rangefinder_m": v.rangefinder_distance_m,
         "rangefinder_age_s": rf_age,
@@ -203,6 +217,7 @@ def main():
     print(" KINGPHOENIX V2.2.3 - MAVLINK TELEMETRY / GCS FIX")
     print("============================================================")
     print("[V2.2.3] GPS position/fix/sats + current waypoint + battery current published")
+    print("[V2.2.3] Current Location source: GLOBAL_POSITION_INT / EKF with RAW GPS fallback")
     print("[V2.2.3] LiDAR uses DISTANCE_SENSOR primary with freshness/age diagnostics")
     print("[V2.2.3] Legacy RANGEFINDER remains parser fallback but is not requested")
     print("[V2.2.3] Flight movement/control TX remains DISABLED")
