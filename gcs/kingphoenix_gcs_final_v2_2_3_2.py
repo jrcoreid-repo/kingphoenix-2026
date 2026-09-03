@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Kingphoenix GCS V2.2.3.2 - visible current GPS location.
+"""Kingphoenix GCS V2.2.3.2 - visible current vehicle location.
 
-Extends V2.2.3.1 without changing the frozen operator structure. Adds one
-compact Current Location row to the existing SETUP / WAYPOINT card and binds
-it to live FC GPS latitude/longitude already present in V2.2.3 metadata.
+Extends V2.2.3.1 without changing the frozen operator structure. Current
+Location now prefers the FC navigation/EKF GLOBAL_POSITION_INT position and
+shows source/rate freshness. GPS_RAW_INT is retained only as a fallback.
 """
 
 from __future__ import annotations
@@ -44,21 +44,52 @@ def _create_gui_v2232():
         print(f"[GCS] V2.2.3.2 location widget warning: {exc}")
 
 
+def _safe_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 def _bind_existing_final_tags_v2232(meta):
     diag = _original_bind_existing_final_tags(meta)
     telemetry = (meta or {}).get("telemetry") or {}
+    rates = telemetry.get("rx_rate_hz") or {}
 
-    lat = telemetry.get("gps_lat_deg")
-    lon = telemetry.get("gps_lon_deg")
+    # Primary source = navigation/EKF vehicle position used by ArduPilot.
+    lat = _safe_float(telemetry.get("global_lat_deg"))
+    lon = _safe_float(telemetry.get("global_lon_deg"))
+    age = _safe_float(telemetry.get("global_position_age_s"))
+    rate = _safe_float(rates.get("GLOBAL_POSITION_INT")) or 0.0
+    source = "EKF"
+    fresh = bool(telemetry.get("global_position_fresh", False))
+
+    # Fallback to raw GPS only when GLOBAL_POSITION_INT is unavailable/stale.
+    if lat is None or lon is None or not fresh:
+        raw_lat = _safe_float(telemetry.get("gps_lat_deg"))
+        raw_lon = _safe_float(telemetry.get("gps_lon_deg"))
+        raw_age = _safe_float(telemetry.get("gps_raw_age_s"))
+        raw_fresh = bool(telemetry.get("gps_raw_fresh", False))
+        if raw_lat is not None and raw_lon is not None and raw_fresh:
+            lat, lon, age = raw_lat, raw_lon, raw_age
+            rate = _safe_float(rates.get("GPS_RAW_INT")) or 0.0
+            source = "GPS"
+            fresh = True
 
     try:
         if dpg.does_item_exist("waypoint_current_location"):
             if lat is None or lon is None:
-                dpg.set_value("waypoint_current_location", "--")
-            else:
+                dpg.set_value("waypoint_current_location", "-- / POSITION unavailable")
+            elif fresh:
                 dpg.set_value(
                     "waypoint_current_location",
-                    f"{float(lat):.7f}, {float(lon):.7f}",
+                    f"{lat:.7f}, {lon:.7f}  | {source} {rate:.1f}Hz",
+                )
+            else:
+                age_text = "--" if age is None else f"{age:.1f}s"
+                dpg.set_value(
+                    "waypoint_current_location",
+                    f"STALE {age_text} | {lat:.7f}, {lon:.7f}",
                 )
     except Exception:
         pass
@@ -72,8 +103,9 @@ def main():
     v223._create_gui_v223 = _create_gui_v2232
     v2231._bind_existing_final_tags = _bind_existing_final_tags_v2232
 
-    print("[GCS] V2.2.3.2 CURRENT GPS LOCATION ENABLED")
-    print("[GCS] SETUP / WAYPOINT now shows live RAW GPS latitude, longitude")
+    print("[GCS] V2.2.3.2 LIVE CURRENT LOCATION ENABLED")
+    print("[GCS] Current Location prefers GLOBAL_POSITION_INT / EKF")
+    print("[GCS] RAW GPS is fallback; row shows source + measured MAVLink rate")
     print("[GCS] CONTROL TX remains DISABLED")
     v2231.main()
 
