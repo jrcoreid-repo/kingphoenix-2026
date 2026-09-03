@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Kingphoenix GCS V2.3.5 - explicit Mission Planner laptop destination.
 
-Extends V2.3.4 without redesigning the frozen operator layout. Adds a compact
-Mission Planner bridge control inside the existing SETUP / WAYPOINT card so
-Mission Planner may run on a different laptop from Kingphoenix GCS.
+Extends V2.3.4 without redesigning the frozen operator layout. Mission Planner
+may run on a different laptop from Kingphoenix GCS.
+
+V2.3.5.1 fixes small-screen/operator-row clipping: instead of appending several
+widgets below the fixed-height SETUP / WAYPOINT card, a compact MP BRIDGE button
+is placed on the existing SAVE/SETUP button row. The button opens a modal with
+IP input, SET, AUTO and status. No extra vertical space is consumed in the
+frozen operator card.
 
 The GCS sends only the requested Mission Planner destination IP/port to the Pi.
 The Pi gateway remains authoritative for filtering: in RACE policy FC telemetry
@@ -98,6 +103,7 @@ def _set_mp_destination_worker(ip):
             port = int(data.get("port") or 14555)
             _safe_set("mp_ip_input", shown_ip)
             _safe_set("mp_bridge_status", f"ACTIVE -> {shown_ip}:{port} / RTCM ONLY IN")
+            _safe_set("mp_bridge_button", "MP SET")
             print(
                 f"[GCS-MP] destination set {shown_ip}:{port} "
                 f"via Pi {sender[0]}:{sender[1]}"
@@ -153,6 +159,7 @@ def _clear_mp_destination_worker():
         )
         if bool(response.get("ok", False)):
             _safe_set("mp_bridge_status", "AUTO / GCS HELLO OR MP PEER")
+            _safe_set("mp_bridge_button", "MP BRIDGE")
             print("[GCS-MP] runtime Mission Planner destination override cleared")
         else:
             _safe_set(
@@ -184,43 +191,103 @@ def _clear_mp_destination_requested():
     ).start()
 
 
+def _open_mp_bridge_modal():
+    try:
+        dpg.configure_item("mp_bridge_modal", show=True)
+        vw = int(dpg.get_viewport_client_width())
+        vh = int(dpg.get_viewport_client_height())
+        dpg.configure_item(
+            "mp_bridge_modal",
+            pos=(max(0, vw // 2 - 250), max(0, vh // 2 - 125)),
+        )
+    except Exception as exc:
+        print(f"[GCS-MP] modal open error: {exc}")
+
+
+def _close_mp_bridge_modal():
+    try:
+        dpg.configure_item("mp_bridge_modal", show=False)
+    except Exception:
+        pass
+
+
 def _create_gui_v235():
     _original_create_gui_v233()
 
     try:
-        # Keep the frozen layout intact by adding only one compact network
-        # control at the bottom of the existing SETUP / WAYPOINT card.
-        dpg.add_separator(parent="waypoint_control_card")
-        dpg.add_text(
-            "MISSION PLANNER BRIDGE",
-            parent="waypoint_control_card",
-            color=(145, 180, 220, 255),
-        )
-        with dpg.group(horizontal=True, parent="waypoint_control_card"):
-            dpg.add_input_text(
-                tag="mp_ip_input",
-                default_value="",
-                hint="Mission Planner IP",
-                width=155,
-            )
+        # Add one compact button to the EXISTING horizontal row containing
+        # SAVE WAYPOINT + ENTER SETUP MODE. This consumes no additional vertical
+        # height, avoiding clipping on the fixed-height operator row.
+        setup_row = dpg.get_item_parent("unlock_edit_button")
+        if setup_row and not dpg.does_item_exist("mp_bridge_button"):
             dpg.add_button(
-                label="SET",
-                width=58,
-                callback=_set_mp_destination_requested,
+                label="MP BRIDGE",
+                tag="mp_bridge_button",
+                parent=setup_row,
+                width=105,
+                height=42,
+                callback=_open_mp_bridge_modal,
             )
-            dpg.add_button(
-                label="AUTO",
-                width=62,
-                callback=_clear_mp_destination_requested,
-            )
-        dpg.add_text(
-            "AUTO / SET IP FOR SEPARATE MP LAPTOP",
-            tag="mp_bridge_status",
-            parent="waypoint_control_card",
-            color=(180, 190, 200, 255),
-        )
     except Exception as exc:
-        print(f"[GCS] V2.3.5 Mission Planner bridge widget warning: {exc}")
+        print(f"[GCS] V2.3.5 MP bridge launcher warning: {exc}")
+
+    try:
+        # Modal lives outside the fixed operator child window, so all controls
+        # remain visible regardless of card height/DPI scaling.
+        with dpg.window(
+            tag="mp_bridge_modal",
+            label="MISSION PLANNER BRIDGE",
+            modal=True,
+            show=False,
+            no_resize=True,
+            no_collapse=True,
+            width=500,
+            height=250,
+        ):
+            dpg.add_text(
+                "MISSION PLANNER LAPTOP DESTINATION",
+                color=(145, 180, 220, 255),
+            )
+            dpg.add_text(
+                "Enter the IPv4 address of the laptop running Mission Planner.",
+                color=(180, 190, 200, 255),
+            )
+            dpg.add_separator()
+            with dpg.group(horizontal=True):
+                dpg.add_input_text(
+                    tag="mp_ip_input",
+                    default_value="",
+                    hint="e.g. 192.168.1.25",
+                    width=255,
+                )
+                dpg.add_button(
+                    label="SET",
+                    width=75,
+                    callback=_set_mp_destination_requested,
+                )
+                dpg.add_button(
+                    label="AUTO",
+                    width=75,
+                    callback=_clear_mp_destination_requested,
+                )
+            dpg.add_text(
+                "AUTO / SET IP FOR SEPARATE MP LAPTOP",
+                tag="mp_bridge_status",
+                color=(180, 190, 200, 255),
+            )
+            dpg.add_text(
+                "RACE policy: FC telemetry OUT / GPS_RTCM_DATA ONLY IN",
+                color=(245, 190, 70, 255),
+            )
+            dpg.add_spacer(height=4)
+            dpg.add_button(
+                label="CLOSE",
+                width=-1,
+                height=34,
+                callback=_close_mp_bridge_modal,
+            )
+    except Exception as exc:
+        print(f"[GCS] V2.3.5 MP bridge modal warning: {exc}")
 
 
 def main():
@@ -228,8 +295,9 @@ def main():
     # all V2.3.4 preflight and V2.3.3 FC-message behavior is preserved.
     v233._create_gui_v233 = _create_gui_v235
 
-    print("[GCS] V2.3.5 MISSION PLANNER DESTINATION CONTROL")
-    print("[GCS] SETUP / WAYPOINT card can SET a separate Mission Planner laptop IP")
+    print("[GCS] V2.3.5.1 MISSION PLANNER DESTINATION CONTROL")
+    print("[GCS] MP BRIDGE button is on the SAVE WAYPOINT / SETUP row")
+    print("[GCS] Click MP BRIDGE -> enter separate Mission Planner laptop IP -> SET")
     print("[GCS] Pi RACE gateway remains FC telemetry OUT + GPS_RTCM_DATA ONLY IN")
 
     v234.main()
