@@ -35,7 +35,7 @@ class VehicleState:
     armed: bool = False
     mode: str = "UNKNOWN"
 
-    # Position / attitude
+    # Local position / attitude
     x: float | None = None
     y: float | None = None
     z: float | None = None
@@ -45,7 +45,15 @@ class VehicleState:
     yaw: float | None = None
     groundspeed_mps: float | None = None
 
-    # Power / GPS / mission
+    # EKF/global vehicle position from GLOBAL_POSITION_INT.
+    # Kept separate from raw receiver GPS so the GCS Current Location has a
+    # single unambiguous source that matches navigation/mission state.
+    global_lat_deg: float | None = None
+    global_lon_deg: float | None = None
+    global_alt_m: float | None = None
+    global_position_last_ns: int = 0
+
+    # Power / raw GPS / mission
     battery_v: float | None = None
     battery_current_a: float | None = None
     battery_remaining: int | None = None
@@ -95,6 +103,11 @@ class VehicleState:
         if not self.last_heartbeat_ns:
             return float("inf")
         return (time.monotonic_ns() - self.last_heartbeat_ns) / 1e9
+
+    def global_position_age_s(self):
+        if not self.global_position_last_ns:
+            return float("inf")
+        return (time.monotonic_ns() - self.global_position_last_ns) / 1e9
 
     def mark_message(self, message_name: str, timestamp_ns: int | None = None):
         name = str(message_name).upper()
