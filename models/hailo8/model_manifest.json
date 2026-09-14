@@ -7,7 +7,7 @@
   "repository_path": "models/hailo8/yolo26_gate_v2.hef",
   "sha256": "f19dacab1740c0eede457498e44ba7796a70655d6c28625af0bfdd30868aea44",
   "size_bytes": 7606771,
-  "status": "PENDING_BINARY_UPLOAD",
+  "status": "ACTIVE",
   "uploaded_source_name": "yolo26_baru.hef",
-  "notes": "Prepared 2026-09-14. Keep config/system.json on the previous working HEF until this binary exists in the repository."
+  "notes": "Activated on dev 2026-09-14. Runtime resolves the active HEF through config/active_model.json and keeps system.json detector HEF as backward-compatible fallback."
 }
