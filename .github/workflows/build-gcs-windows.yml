@@ -40,6 +40,7 @@ jobs:
             --windowed `
             --name Kingphoenix-GCS `
             --paths gcs `
+            --add-data "gcs/background.png;." `
             --collect-all dearpygui `
             --collect-all av `
             --collect-all cv2 `
@@ -51,6 +52,9 @@ jobs:
         run: |
           if (!(Test-Path 'dist/Kingphoenix-GCS/Kingphoenix-GCS.exe')) {
             throw 'Kingphoenix-GCS.exe was not created'
+          }
+          if (!(Test-Path 'dist/Kingphoenix-GCS/_internal/background.png') -and !(Test-Path 'dist/Kingphoenix-GCS/background.png')) {
+            throw 'background.png was not bundled with the portable GCS build'
           }
           Get-ChildItem -Recurse dist/Kingphoenix-GCS | Select-Object FullName,Length
 
