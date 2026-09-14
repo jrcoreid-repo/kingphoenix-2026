@@ -12,7 +12,6 @@ import argparse
 import time
 
 from config import load_json
-from core.runtime import KingphoenixRuntime
 
 
 def _trace(event, data):
@@ -77,7 +76,7 @@ def main():
     parser.add_argument("--mode", dest="flight_mode", default=None,
                         help="Flight mode for action=mode, e.g. GUIDED or LOITER")
     parser.add_argument("--altitude", type=float, default=nominal_alt,
-                        help=f"Takeoff altitude in metres (default {nominal_alt:.1f})")
+                        help=f"LiDAR takeoff height in metres, ends holding in BRAKE (default {nominal_alt:.1f})")
     parser.add_argument("--heartbeat-timeout", type=float, default=8.0)
     parser.add_argument("--confirm-props-removed", action="store_true",
                         help="Required for standalone bench ARM")
@@ -95,7 +94,16 @@ def main():
     if args.action == "mode" and not args.flight_mode:
         raise SystemExit("REFUSED: action=mode requires --mode=<MODE>")
 
+    import main_v2_3_2  # canonical telemetry/runtime patches, as in main.py
+    from core.runtime import KingphoenixRuntime
     runtime = KingphoenixRuntime()
+    if args.action == 'takeoff':
+        runtime.state.system['wp_test_owner'] = True
+        runtime.state.system['wp_test_active'] = True
+        runtime.state.system['wp_test_abort'] = False
+        runtime.gcs.command = None
+        runtime.mp_gateway.policy = 'RACE'
+        runtime.waypoints.lock()
     try:
         runtime.start()
         if not _wait_heartbeat(runtime, args.heartbeat_timeout):
@@ -135,3 +143,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
