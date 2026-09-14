@@ -3,10 +3,104 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
+
+from pymavlink import mavutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.flight_test_common import DirectFlightTest, FlightTestError
+
+
+def _fmt(value):
+    return "--" if value is None else f"{float(value):.2f}"
+
+
+def takeoff_with_diagnostics(test: DirectFlightTest, target_m: float, *, margin: float,
+                             tolerance: float, hold_s: float, timeout: float):
+    target_m = float(target_m)
+    if not 0.50 <= target_m <= 3.0:
+        raise FlightTestError("takeoff altitude must be 0.50-3.00 m")
+
+    command_m = target_m * (1.0 + float(margin))
+    threshold = target_m - float(tolerance)
+
+    print(f"[TAKEOFF] requested={target_m:.2f}m command={command_m:.2f}m (+{margin*100:.0f}%)")
+    test.set_mode("GUIDED")
+    test.arm()
+
+    # Send ArduCopter GUIDED takeoff. Completion is still LiDAR-only, but this
+    # runner now shows the FC altitude estimators and COMMAND_ACK for diagnosis.
+    test.master.mav.command_long_send(
+        test.master.target_system,
+        test.master.target_component,
+        mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+        0,
+        0, 0, 0, float("nan"), 0, 0, command_m,
+    )
+
+    deadline = time.monotonic() + float(timeout)
+    reached_since = None
+    lidar_loss_since = None
+    last_print = 0.0
+    takeoff_ack = None
+
+    while time.monotonic() < deadline:
+        msg = test.poll(0.10)
+        now = time.monotonic()
+
+        if msg is not None and msg.get_type() == "COMMAND_ACK":
+            command = int(getattr(msg, "command", -1))
+            if command == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+                takeoff_ack = int(getattr(msg, "result", -1))
+                print(f"\n[ACK] NAV_TAKEOFF result={takeoff_ack}")
+                if takeoff_ack not in (
+                    mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                    mavutil.mavlink.MAV_RESULT_IN_PROGRESS,
+                ):
+                    raise FlightTestError(f"NAV_TAKEOFF rejected/result={takeoff_ack}")
+
+        if not test.heartbeat_ok():
+            raise FlightTestError("heartbeat lost during takeoff")
+
+        # If the FC leaves GUIDED during the climb, stop the test immediately.
+        # A spontaneous transition to LAND/ALT_HOLD/etc. is more important than
+        # waiting for the LiDAR timeout.
+        if test.mode != "GUIDED":
+            raise FlightTestError(f"flight mode changed during takeoff: {test.mode}")
+
+        rel_alt = None if test.global_pos is None else test.global_pos[2]
+        local_up = None if test.local is None else -float(test.local[2])
+
+        if now - last_print >= 0.20:
+            print(
+                f"[LIVE] mode={test.mode:<8} armed={str(test.armed):<5} "
+                f"LiDAR={_fmt(test.lidar)}m relAlt={_fmt(rel_alt)}m "
+                f"localUp={_fmt(local_up)}m target>={threshold:.2f}m "
+                f"ACK={takeoff_ack if takeoff_ack is not None else '--'}"
+            )
+            last_print = now
+
+        if test.lidar_ok():
+            lidar_loss_since = None
+            if test.lidar >= threshold:
+                reached_since = reached_since or now
+                if now - reached_since >= float(hold_s):
+                    print(f"[TAKEOFF] COMPLETE LiDAR={test.lidar:.2f}m stable={hold_s:.2f}s")
+                    return
+            else:
+                reached_since = None
+        else:
+            lidar_loss_since = lidar_loss_since or now
+            if now - lidar_loss_since > 0.60:
+                raise FlightTestError("LiDAR invalid/stale >0.60 s during takeoff")
+
+    raise FlightTestError(
+        "takeoff timeout; "
+        f"LiDAR={_fmt(test.lidar)}m relAlt={_fmt(None if test.global_pos is None else test.global_pos[2])}m "
+        f"localUp={_fmt(None if test.local is None else -float(test.local[2]))}m "
+        f"mode={test.mode} ACK={takeoff_ack if takeoff_ack is not None else '--'}"
+    )
 
 
 def main():
@@ -27,8 +121,14 @@ def main():
     try:
         test.open()
         test.collect_preflight(require_auto=False)
-        print(f"[PREFLIGHT] PASS LiDAR={test.lidar:.2f}m mode={test.mode} armed={test.armed}")
-        test.takeoff_lidar_confirmed(
+        rel_alt = None if test.global_pos is None else test.global_pos[2]
+        local_up = None if test.local is None else -float(test.local[2])
+        print(
+            f"[PREFLIGHT] PASS LiDAR={test.lidar:.2f}m mode={test.mode} armed={test.armed} "
+            f"relAlt={_fmt(rel_alt)}m localUp={_fmt(local_up)}m"
+        )
+        takeoff_with_diagnostics(
+            test,
             args.alt,
             margin=args.margin,
             tolerance=args.tolerance,
