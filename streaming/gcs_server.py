@@ -334,6 +334,15 @@ class GcsServer(threading.Thread):
         tx = msg.get("tx_id")
         kind = str(msg.get("type", "")).upper()
 
+        if self.state.system.get("wp_test_owner"):
+            if kind == "ABORT_MISSION":
+                self.state.system["wp_test_abort"] = True
+                return ack(tx, True, "WP TEST ABORT REQUESTED; RC TAKEOVER")
+            if kind in ("ARM", "DISARM", "SET_MODE", "START_MISSION"):
+                return ack(tx, False, "STANDALONE WP TEST OWNS FLIGHT COMMANDS; USE RC TO OVERRIDE")
+            if kind in ("SAVE_WAYPOINT", "UNLOCK_EDIT") and self.state.system.get("wp_test_active"):
+                return ack(tx, False, "WP TEST ACTIVE; EDITS LOCKED")
+
         if kind == "HELLO":
             claimed_pc_ip = str(msg.get("pc_ip") or "")
             peer_ip = str(peer[0] if peer else "")
@@ -457,3 +466,4 @@ class GcsServer(threading.Thread):
             return ack(tx, True, "ABORT REQUESTED")
 
         return ack(tx, False, "Unknown command " + kind)
+
