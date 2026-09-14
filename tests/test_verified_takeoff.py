@@ -31,6 +31,12 @@ class TakeoffTests(unittest.TestCase):
         self.v = VehicleState(connected=True, mode='GUIDED', relative_alt_m=0.0)
         self.sent = []
         self.alt = 0.0
+        self.lidar = .1
+        self.publish_lidar = True
+        self.lidar_stamp = 0
+        self.sensor_id = 0
+        self.modes = []
+        self.brake_works = True
         self.publish_alt = True
         self.publish_heartbeat = True
         self.arm_delay = 0.12
@@ -46,6 +52,19 @@ class TakeoffTests(unittest.TestCase):
     def tearDown(self):
         for p in reversed(self.patches): p.stop()
     def telemetry(self):
+        self.v.gps_fix_type = 3
+        self.v.mark_message('GPS_RAW_INT')
+        self.v.roll = self.v.pitch = 0.
+        self.v.mark_message('ATTITUDE')
+        if self.publish_lidar and self.clock.monotonic_ns() - self.lidar_stamp >= 100000000:
+            self.lidar_stamp = self.clock.monotonic_ns()
+            self.v.rangefinder_distance_m = self.lidar
+            self.v.rangefinder_last_ns = self.lidar_stamp
+            self.v.rangefinder_source = 'DISTANCE_SENSOR'
+            self.v.rangefinder_orientation = 25
+            self.v.rangefinder_id = self.sensor_id
+            self.v.rangefinder_min_m = .1
+            self.v.rangefinder_max_m = 12.
         if self.publish_heartbeat:
             self.v.last_heartbeat_ns = self.clock.monotonic_ns()
         if self.publish_alt:
@@ -54,7 +73,8 @@ class TakeoffTests(unittest.TestCase):
     def ack(self, cmd, result, sysid=1):
         self.v.record_command_ack(cmd, result, sysid, 1)
     def mode(self, mode):
-        self.v.mode = mode
+        self.modes.append(mode)
+        if mode != 'BRAKE' or self.brake_works: self.v.mode = mode
         return True
     def armed(self):
         self.v.armed = True
@@ -68,9 +88,11 @@ class TakeoffTests(unittest.TestCase):
     def takeoff(self, alt):
         self.sent.append(('takeoff', self.clock.t))
         if self.takeoff_ack is not None: self.ack(22, self.takeoff_ack)
-        if self.climb: self.clock.later(0.1, lambda: setattr(self, 'alt', alt))
+        self.fc_target = alt
+        if self.climb:
+            self.clock.later(0.1, lambda: (setattr(self, 'alt', alt), setattr(self, 'lidar', 1.2)))
         return True
-    def run_takeoff(self): return self.manager.takeoff(1.2, state_timeout_s=1.0)
+    def run_takeoff(self): return self.manager.takeoff(1.2, state_timeout_s=2.0)
     def test_immediate_after_verified_arm(self):
         result = self.run_takeoff()
         self.assertTrue(result.ok, result)
@@ -120,12 +142,12 @@ class TakeoffTests(unittest.TestCase):
         self.assertEqual(self.sent, [])
     def test_frozen_target_sample_is_not_three_samples(self):
         def freeze():
-            self.alt = 1.2
+            self.lidar = 1.2
             self.telemetry()
-            self.publish_alt = False
+            self.publish_lidar = False
         self.clock.later(.24, freeze)
         self.assertFalse(self.run_takeoff().ok)
-    def test_lidar_cannot_prove_home_relative_target(self):
+    def test_already_at_lidar_target_refuses_takeoff(self):
         self.climb = False
         self.v.rangefinder_distance_m = 1.2
         self.v.rangefinder_last_ns = self.clock.monotonic_ns()
@@ -152,7 +174,7 @@ class TakeoffTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
     def test_overshoot_not_target_success(self):
         self.climb = False
-        self.clock.later(.24, lambda: setattr(self, 'alt', 2.5))
+        self.clock.later(.24, lambda: setattr(self, 'lidar', 2.5))
         self.assertFalse(self.run_takeoff().ok)
     def test_heartbeat_loss(self):
         self.climb = False
@@ -160,4 +182,65 @@ class TakeoffTests(unittest.TestCase):
         self.assertFalse(self.run_takeoff().ok)
 
 
+    def test_relative_altitude_not_completion_source(self):
+        def wrong_baro():
+            self.alt = 15.
+        self.clock.later(.3, wrong_baro)
+        result = self.run_takeoff()
+        self.assertTrue(result.ok, result)
+        self.assertEqual(self.v.mode, 'BRAKE')
+        self.assertIn('BRAKE', self.modes)
+        self.assertAlmostEqual(self.fc_target, (1.2-.1)*1.05)
+    def test_frozen_relative_target_cannot_mask_stale_lidar(self):
+        self.clock.later(.3, lambda: setattr(self, 'publish_lidar', False))
+        result = self.run_takeoff()
+        self.assertFalse(result.ok)
+        self.assertIn('BRAKE', self.modes)
+    def test_brake_rejected_never_done(self):
+        self.brake_works = False
+        result = self.run_takeoff()
+        self.assertFalse(result.ok)
+        self.assertIn('BRAKE', self.modes)
+    def test_invalid_lidar_prevents_arm(self):
+        for value in (float('nan'), float('inf'), 0., 20.):
+            self.v.rangefinder_distance_m = value
+            self.assertFalse(self.run_takeoff().ok)
+        self.assertEqual(self.sent, [])
+    def test_wrong_orientation_and_quality_prevent_arm(self):
+        self.v.rangefinder_orientation = 0
+        self.assertFalse(self.run_takeoff().ok)
+        self.v.rangefinder_orientation = 25
+        self.v.rangefinder_signal_quality = 1
+        self.assertFalse(self.run_takeoff().ok)
+        self.assertEqual(self.sent, [])
+    def test_sensor_loss_during_arm_prevents_takeoff(self):
+        self.arm_delay = 1.
+        self.clock.later(.1, lambda: setattr(self, 'publish_lidar', False))
+        self.assertFalse(self.run_takeoff().ok)
+        self.assertEqual([x[0] for x in self.sent], ['arm'])
+    def test_pilot_land_never_overridden_by_brake(self):
+        self.clock.later(.16, lambda: setattr(self.v, 'mode', 'LAND'))
+        self.assertFalse(self.run_takeoff().ok)
+        self.assertNotIn('BRAKE', self.modes)
+    def test_sensor_identity_change_aborts(self):
+        self.clock.later(.3, lambda: setattr(self, 'sensor_id', 2))
+        self.assertFalse(self.run_takeoff().ok)
+        self.assertIn('BRAKE', self.modes)
+    def test_baro_target_alone_does_not_finish(self):
+        self.climb = False
+        self.clock.later(.2, lambda: setattr(self, 'alt', 1.2))
+        self.assertFalse(self.run_takeoff().ok)
+    def test_missing_ack_still_brakes_at_lidar_target(self):
+        self.takeoff_ack = None
+        result = self.run_takeoff()
+        self.assertFalse(result.ok)
+        self.assertEqual(self.v.mode, 'BRAKE')
+    def test_sensor_to_home_target_translation(self):
+        self.alt = 2.
+        self.telemetry()
+        self.assertTrue(self.run_takeoff().ok)
+        self.assertAlmostEqual(self.fc_target, 2.+(1.2-.1)*1.05)
+
+
 if __name__ == '__main__': unittest.main()
+
