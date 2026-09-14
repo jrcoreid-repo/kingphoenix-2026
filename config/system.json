@@ -7,7 +7,7 @@
     "message_rates_hz": {"ATTITUDE":30,"LOCAL_POSITION_NED":30,"GLOBAL_POSITION_INT":20,"GPS_RAW_INT":10,"VFR_HUD":10,"SYS_STATUS":5,"MISSION_CURRENT":2,"DISTANCE_SENSOR":20},
     "freshness_s": {"HEARTBEAT":2.5,"ATTITUDE":0.1,"LOCAL_POSITION_NED":0.15,"GLOBAL_POSITION_INT":0.3,"GPS_RAW_INT":0.5,"VFR_HUD":0.3,"SYS_STATUS":1.0,"MISSION_CURRENT":1.0,"DISTANCE_SENSOR":0.20},
     "source_system":1,"source_component":191,"target_system":1,"target_component":1,
-    "vct":{"ack_timeout_s":0.8,"state_timeout_s":1.5,"max_attempts":3,"backoff_s":[0.25,0.5,0.9],"mode_settle_s":0.35,"mode_roundtrip_pause_s":0.75,"arm_terminal_reject_results":[1,2,3,4,6,7,8,9],"disarm_terminal_reject_results":[1,2,3,4,6,7,8,9],"capture_statustext":true},
+    "vct":{"arm_ack_timeout_s":2.0,"arm_state_timeout_s":8.0,"arm_progress_timeout_s":10.0,"takeoff_ack_timeout_s":2.0,"ack_timeout_s":0.8,"state_timeout_s":1.5,"max_attempts":3,"backoff_s":[0.25,0.5,0.9],"mode_settle_s":0.35,"mode_roundtrip_pause_s":0.75,"arm_terminal_reject_results":[1,2,3,4,6,7,8,9],"disarm_terminal_reject_results":[1,2,3,4,6,7,8,9],"capture_statustext":true},
     "transport":"SERIAL_DIRECT","device":"/dev/ttyAMA0","note":"Direct Kakute H7 <-> Raspberry Pi UART link. V2.3 enables only explicit guarded GCS bench ARM/DISARM and disarmed mode changes; movement TX remains disabled."
   },
   "mission_planner_gateway":{"enabled":true,"bind_ip":"0.0.0.0","port":14555,"destination_port":14555,"destination_ip":"AUTO_GCS","policy":"RACE","learn_peer":true,"strict_inbound_source":true,"mirror_queue_size":512},

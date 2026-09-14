@@ -13,17 +13,15 @@ class VctResult:
     ack_result: int | None = None
     ack_source: str | None = None
     elapsed_s: float = 0.0
-    outcome: str = "FAILED"   # SUCCESS | REJECTED | FAILED
+    outcome: str = "FAILED"   # SUCCESS | REJECTED | FAILED | UNCONFIRMED
 
 
 class VerifiedCommandTransaction:
     """Verified Command Transaction.
 
-    Flow:
-      pre-check -> send -> optional ACK correlation -> state verification
-      -> adaptive retry/backoff -> structured result.
-
-    V1.7 distinguishes explicit FC rejection from transport/verification failure.
+    Correlate ACK identity/time while monitoring state and bounded progress.
+    Critical ACK-required transactions are never resent after successful TX.
+    UNCONFIRMED means an action may still be active on the FC.
     """
 
     def __init__(
@@ -45,6 +43,9 @@ class VerifiedCommandTransaction:
         accepted_ack_results=(0,),
         terminal_reject_results=(2, 3, 4, 6, 7, 8, 9),
         trace_fn=None,
+        progress_timeout_s=10.0,
+        abort_fn=None,
+        allow_already_satisfied=True,
     ):
         self.name = str(name)
         self.send_fn = send_fn
@@ -64,6 +65,9 @@ class VerifiedCommandTransaction:
         self.accepted_ack_results = tuple(int(x) for x in accepted_ack_results)
         self.terminal_reject_results = tuple(int(x) for x in terminal_reject_results)
         self.trace_fn = trace_fn
+        self.progress_timeout_s = float(progress_timeout_s)
+        self.abort_fn = abort_fn or (lambda: (True, ""))
+        self.allow_already_satisfied = bool(allow_already_satisfied)
 
     def _trace(self, event: str, **data):
         if self.trace_fn is None:
@@ -74,156 +78,81 @@ class VerifiedCommandTransaction:
             # Diagnostics must never break the transaction.
             pass
 
-    def _wait_for_ack(self, since_ns: int):
-        if self.vehicle_state is None or self.expected_command is None:
-            return None
-
-        deadline = time.monotonic() + self.ack_timeout_s
-        while time.monotonic() < deadline:
-            ack = self.vehicle_state.find_command_ack(
-                self.expected_command,
-                since_ns,
-                self.expected_ack_system,
-                self.expected_ack_component,
-            )
-            if ack is not None:
-                return ack
-            time.sleep(0.01)
-        return None
-
-    def _wait_for_state(self) -> bool:
-        deadline = time.monotonic() + self.state_timeout_s
-        while time.monotonic() < deadline:
-            if self.verify_fn():
-                return True
-            time.sleep(0.02)
-        return bool(self.verify_fn())
-
     def run(self) -> VctResult:
         started = time.monotonic()
-        self._trace("START", name=self.name)
-
-        ok, reason = self.precheck_fn()
-        self._trace("PRECHECK", ok=bool(ok), reason=str(reason or ""))
-        if not ok:
-            return VctResult(
-                ok=False,
-                attempts=0,
-                reason=f"precheck: {reason}",
-                elapsed_s=time.monotonic() - started,
-                outcome="FAILED",
-            )
-
-        if self.verify_fn():
-            self._trace("ALREADY_SATISFIED")
-            return VctResult(
-                ok=True,
-                attempts=0,
-                reason="already satisfied",
-                elapsed_s=time.monotonic() - started,
-                outcome="SUCCESS",
-            )
-
-        last_reason = "verification timeout"
         last_ack = None
+        attempt = 0
 
+        def result(ok, reason, outcome="FAILED"):
+            self._trace(outcome, reason=reason, name=self.name)
+            return VctResult(ok, attempt, reason,
+                             None if last_ack is None else last_ack.result,
+                             None if last_ack is None else
+                             f"{last_ack.source_system}:{last_ack.source_component}",
+                             time.monotonic() - started, outcome)
+
+        self._trace("START", name=self.name)
         for attempt in range(1, self.attempts + 1):
+            ok, reason = self.precheck_fn()
+            if not ok:
+                return result(False, f"precheck: {reason}")
+            if self.allow_already_satisfied and self.verify_fn():
+                attempt -= 1
+                return result(True, "already satisfied", "SUCCESS")
+            since_ns = time.monotonic_ns()
             self._trace("ATTEMPT", attempt=attempt, total=self.attempts)
-            send_time_ns = time.monotonic_ns()
-
             try:
                 sent = bool(self.send_fn())
             except Exception as exc:
-                sent = False
-                last_reason = f"send exception: {exc}"
-
+                return result(False, f"send exception; command delivery unknown: {exc}", "UNCONFIRMED")
             self._trace("SEND", ok=sent)
-
-            if sent:
-                ack = self._wait_for_ack(send_time_ns)
-                last_ack = ack
-
-                self._trace(
-                    "ACK",
-                    received=ack is not None,
-                    result=None if ack is None else ack.result,
-                    source=None if ack is None else (
-                        f"{ack.source_system}:{ack.source_component}"
-                    ),
-                )
-
-                if self.require_ack:
-                    if ack is None:
-                        last_reason = "ACK timeout"
-
-                    elif ack.result in self.terminal_reject_results:
-                        self._trace(
-                            "REJECTED",
-                            result=ack.result,
-                            source=f"{ack.source_system}:{ack.source_component}",
-                        )
-                        return VctResult(
-                            ok=False,
-                            attempts=attempt,
-                            reason=f"FC rejected command, ACK result={ack.result}",
-                            ack_result=ack.result,
-                            ack_source=f"{ack.source_system}:{ack.source_component}",
-                            elapsed_s=time.monotonic() - started,
-                            outcome="REJECTED",
-                        )
-
-                    elif ack.result not in self.accepted_ack_results:
-                        last_reason = f"non-accepted ACK result={ack.result}"
-
-                    else:
-                        state_ok = self._wait_for_state()
-                        self._trace("STATE_VERIFY", ok=state_ok)
-                        if state_ok:
-                            return VctResult(
-                                ok=True,
-                                attempts=attempt,
-                                reason="ACK + state verified",
-                                ack_result=ack.result,
-                                ack_source=f"{ack.source_system}:{ack.source_component}",
-                                elapsed_s=time.monotonic() - started,
-                                outcome="SUCCESS",
-                            )
-                        last_reason = "ACK accepted but state not verified"
-
-                else:
-                    state_ok = self._wait_for_state()
-                    self._trace("STATE_VERIFY", ok=state_ok)
-                    if state_ok:
-                        return VctResult(
-                            ok=True,
-                            attempts=attempt,
-                            reason="state verified",
-                            ack_result=None if ack is None else ack.result,
-                            ack_source=None if ack is None else (
-                                f"{ack.source_system}:{ack.source_component}"
-                            ),
-                            elapsed_s=time.monotonic() - started,
-                            outcome="SUCCESS",
-                        )
-                    last_reason = "state not verified"
-
-            elif not last_reason.startswith("send exception"):
-                last_reason = "send failed"
-
+            if not sent:
+                reason = "send failed"
+            else:
+                ack_deadline = time.monotonic() + self.ack_timeout_s
+                # State monitoring starts with transmission, including if ACK is lost.
+                state_deadline = time.monotonic() + self.state_timeout_s
+                progress_deadline = None
+                last_ack = None
+                observed_state = False
+                while True:
+                    ok, reason = self.abort_fn()
+                    if not ok:
+                        return result(False, f"monitor stopped: {reason}; FC command may still be active", "UNCONFIRMED")
+                    now = time.monotonic()
+                    ack = None
+                    if self.vehicle_state is not None and self.expected_command is not None:
+                        ack = self.vehicle_state.find_command_ack(
+                            self.expected_command, since_ns,
+                            self.expected_ack_system, self.expected_ack_component)
+                    if ack is not None and (last_ack is None or ack.timestamp_ns > last_ack.timestamp_ns):
+                        last_ack = ack
+                        self._trace("ACK", result=ack.result,
+                                    source=f"{ack.source_system}:{ack.source_component}")
+                        if ack.result in self.terminal_reject_results:
+                            return result(False, f"FC rejected command, ACK result={ack.result}", "REJECTED")
+                        if ack.result == 5 and progress_deadline is None:
+                            progress_deadline = now + self.progress_timeout_s
+                            state_deadline = max(state_deadline, progress_deadline)
+                            self._trace("IN_PROGRESS")
+                    observed_state = bool(self.verify_fn())
+                    accepted = last_ack is not None and last_ack.result in self.accepted_ack_results
+                    if observed_state and (accepted or not self.require_ack):
+                        return result(True, "ACK + state verified" if self.require_ack else "state verified", "SUCCESS")
+                    # No retransmission after acceptance or IN_PROGRESS. A timeout
+                    # is not evidence that the physical action did not happen.
+                    deadline = state_deadline
+                    if self.require_ack and last_ack is None:
+                        deadline = max(deadline, ack_deadline)
+                    if now >= deadline:
+                        detail = "state observed" if observed_state else "state not verified"
+                        if self.require_ack:
+                            return result(False, f"{detail}; final ACK/state timeout; inspect FC before retry", "UNCONFIRMED")
+                        reason = "state not verified"
+                        break
+                    time.sleep(0.02)
             if attempt < self.attempts:
                 delay = self.backoff[min(attempt - 1, len(self.backoff) - 1)]
-                self._trace("BACKOFF", seconds=delay, reason=last_reason)
+                self._trace("BACKOFF", seconds=delay, reason=reason)
                 time.sleep(delay)
-
-        self._trace("FAILED", reason=last_reason)
-        return VctResult(
-            ok=False,
-            attempts=self.attempts,
-            reason=last_reason,
-            ack_result=None if last_ack is None else last_ack.result,
-            ack_source=None if last_ack is None else (
-                f"{last_ack.source_system}:{last_ack.source_component}"
-            ),
-            elapsed_s=time.monotonic() - started,
-            outcome="FAILED",
-        )
+        return result(False, reason)
