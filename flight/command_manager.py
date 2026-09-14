@@ -131,112 +131,24 @@ class CommandManager:
 
     def takeoff(self, altitude_m, trace_fn=None, min_alt_m=0.5, max_alt_m=3.0,
                 verify_ratio=0.8, state_timeout_s=10.0):
-        """GUIDED -> verified ARM -> immediate TAKEOFF -> fresh target samples.
+        """Takeoff to LiDAR sensor-to-ground height, brake and verify stable hold.
 
-        No fixed post-arm delay or motor parameter override. FC owns spool-up.
-        Success confirms target altitude, not stable hover. Flight-tool only.
+        verify_ratio is retained only for old callers; LiDAR uses fixed 0.10m tolerance.
+        All high-level takeoff callers share this implementation.
         """
-        altitude_m = float(altitude_m)
-        if (not all(math.isfinite(float(x)) for x in
-                    (altitude_m, min_alt_m, max_alt_m, verify_ratio, state_timeout_s))
-                or not 0 < min_alt_m <= altitude_m <= max_alt_m
-                or not 0 < verify_ratio <= 1 or state_timeout_s <= 0):
+        from flight.lidar_takeoff import LidarTakeoff
+        try:
+            values = [float(x) for x in (altitude_m, min_alt_m, max_alt_m, verify_ratio, state_timeout_s)]
+        except (TypeError, ValueError):
             return VctResult(False, 0, "invalid takeoff target or verification limits")
-
-        v = self.state.vehicle
-        freshness_s = 0.30
-
-        def altitude_sample():
-            # NAV_TAKEOFF target is relative to home; do not mix it with LiDAR AGL.
-            alt = v.relative_alt_m
-            ts = v.message_last_ns.get("GLOBAL_POSITION_INT", 0)
-            if (alt is None or not math.isfinite(float(alt)) or not ts or
-                    (time.monotonic_ns() - ts) / 1e9 > freshness_s):
-                return None, ts
-            return float(alt), ts
-
-        ok, reason = self._link_precheck()
-        if not ok:
-            return VctResult(False, 0, reason)
-        baseline, _ = altitude_sample()
-        if baseline is None:
-            return VctResult(False, 0, "fresh GLOBAL_POSITION_INT relative altitude required before ARM")
-        if altitude_m - baseline < 0.2:
-            return VctResult(False, 0, "target must be at least 0.2m above current relative altitude")
-
-        mode_result = self.set_mode("GUIDED", trace_fn=trace_fn)
-        if not mode_result.ok:
-            return mode_result
-        if not v.armed:
-            arm_result = self.arm(trace_fn=trace_fn)
-            if not arm_result.ok:
-                return arm_result
-        # No sleep here: dispatch as soon as armed is verified.
-        sent_ns = [0]
-        last_sample_ns = [0]
-        target_samples = [0]
-        rising_reported = [False]
-        tolerance = min(0.15, altitude_m * (1.0 - verify_ratio))
-
-        def takeoff_precheck():
-            ok, reason = self._link_precheck()
-            if not ok:
-                return ok, reason
-            if v.mode != "GUIDED":
-                return False, f"mode is {v.mode}, expected GUIDED"
-            if not v.armed:
-                return False, "vehicle is not armed"
-            return True, ""
-
-        def send_takeoff():
-            nonlocal baseline
-            ok, _ = takeoff_precheck()
-            baseline, _ = altitude_sample()
-            if not ok or baseline is None or altitude_m - baseline < 0.2:
-                return False
-            sent_ns[0] = time.monotonic_ns()
-            return self.tx.takeoff(altitude_m)
-
-        def altitude_verified():
-            alt, ts = altitude_sample()
-            if not sent_ns[0] or alt is None or ts <= sent_ns[0]:
-                target_samples[0] = 0
-                return False
-            if ts == last_sample_ns[0]:
-                return False
-            last_sample_ns[0] = ts
-            if alt >= baseline + 0.2 and not rising_reported[0]:
-                rising_reported[0] = True
-                if trace_fn:
-                    try:
-                        trace_fn("CLIMB_OBSERVED", {"relative_alt_m": alt})
-                    except Exception:
-                        pass
-            at_target = abs(alt - altitude_m) <= tolerance and alt >= baseline + 0.2
-            target_samples[0] = target_samples[0] + 1 if at_target else 0
-            return target_samples[0] >= 3
-
-        kwargs = self._vct_kwargs()
-        kwargs["ack_timeout_s"] = float(self.vct_cfg.get("takeoff_ack_timeout_s", 2.0))
-        kwargs["state_timeout_s"] = float(state_timeout_s)
-        kwargs["attempts"] = 1
-        result = VerifiedCommandTransaction(
-            f"TAKEOFF_{altitude_m:.2f}M",
-            send_fn=send_takeoff,
-            verify_fn=altitude_verified,
-            precheck_fn=takeoff_precheck,
-            abort_fn=takeoff_precheck,
-            allow_already_satisfied=False,
-            expected_command=22,
-            require_ack=True,
-            terminal_reject_results=(1, 2, 3, 4, 6, 7, 8, 9),
-            trace_fn=trace_fn,
-            **kwargs,
-        ).run()
-        if result.ok:
-            result.reason = "TAKEOFF ACK accepted + 3 fresh relative-altitude samples at target; hover not assessed"
-        return result
+        altitude_m, min_alt_m, max_alt_m, verify_ratio, state_timeout_s = values
+        if (not all(math.isfinite(x) for x in values) or
+                not 0 < min_alt_m <= altitude_m <= max_alt_m <= 3.0 or
+                not 0 < verify_ratio <= 1 or not 0 < state_timeout_s <= 60):
+            return VctResult(False, 0, "invalid takeoff target or verification limits")
+        return LidarTakeoff(self, altitude_m, state_timeout_s, trace_fn).run()
 
     def land(self, trace_fn=None):
         return self.set_mode("LAND", trace_fn=trace_fn)
+
 
