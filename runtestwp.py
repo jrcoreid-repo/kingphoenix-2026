@@ -61,7 +61,7 @@ class FlightTest:
         if self.r.stop_event.is_set() or self.r.state.system.get('wp_test_abort'):
             return False, 'operator abort/runtime stopped'
         if not v.connected or v.heartbeat_age_s() > 2.5: return False, 'FC heartbeat lost/stale'
-        if airborne and (not v.armed or v.mode not in ('GUIDED', 'AUTO', 'LAND')): return False, 'disarmed or pilot/FC mode override'
+        if airborne and (not v.armed or v.mode not in ('GUIDED', 'BRAKE', 'AUTO', 'LAND')): return False, 'disarmed or pilot/FC mode override'
         if v.global_position_age_s() > .5 or v.message_age_s('GLOBAL_POSITION_INT') > .5:
             return False, 'global position stale'
         if v.message_age_s('GPS_RAW_INT') > 1.5 or (v.gps_fix_type or 0) < 3:
@@ -82,20 +82,34 @@ class FlightTest:
     def auto_and_land(self, route, transfer):
         from flight.vct import VerifiedCommandTransaction
         v=self.v
+        from flight.lidar_takeoff import LidarTakeoff
+        lidar = LidarTakeoff(self.r.command, route[0]['alt_m'], 5)
+        lidar.sensor_id = getattr(self.r.command, 'last_takeoff_lidar_id', None)
+        def handoff_ok(transition=False):
+            if lidar.sensor_id is None: return False, 'verified takeoff sensor identity missing'
+            ok, reason = self.navigation_ok(True)
+            if not ok: return ok, reason
+            if v.mode not in (('BRAKE', 'AUTO') if transition else ('BRAKE',)):
+                return False, 'mode overridden during LiDAR-to-AUTO handoff'
+            # After confirmed AUTO, mission altitude belongs to the FC waypoint plan.
+            if transition and v.mode == 'AUTO': return True, ''
+            try: height, _ = lidar.sample()
+            except ValueError as exc: return False, str(exc)
+            if abs(height - route[0]['alt_m']) > lidar.tolerance_m:
+                return False, 'LiDAR height left takeoff tolerance before AUTO'
+            return True, ''
         since=time.monotonic_ns()
         result=VerifiedCommandTransaction('MISSION_CURRENT_1',
             lambda: (transfer.send('mission_set_current_send',*transfer.ids(),1) or True),
             lambda: v.current_mission_item==1 and v.message_last_ns.get('MISSION_CURRENT',0)>since,
-            precheck_fn=lambda:self.navigation_ok(True), abort_fn=lambda:self.navigation_ok(True),
+            precheck_fn=handoff_ok, abort_fn=handoff_ok,
             allow_already_satisfied=False, attempts=1,state_timeout_s=5,trace_fn=trace).run()
         if not result.ok: raise RuntimeError('mission start index unconfirmed')
         transfer.clear()
         def transition_ok():
-            ok, reason=self.navigation_ok(True)
-            if ok and v.mode not in ('GUIDED','AUTO'): return False,'mode overridden before AUTO'
-            return ok,reason
+            return handoff_ok(transition=True)
         auto_since=time.monotonic_ns()
-        result=VerifiedCommandTransaction('AUTO',lambda:self.r.tx.send_mode('AUTO'),
+        result=VerifiedCommandTransaction('AUTO',lambda: handoff_ok()[0] and self.r.tx.send_mode('AUTO'),
             lambda:v.mode=='AUTO' and v.last_heartbeat_ns>auto_since,
             precheck_fn=transition_ok,abort_fn=transition_ok,allow_already_satisfied=False,
             attempts=1,state_timeout_s=5,trace_fn=trace).run()
