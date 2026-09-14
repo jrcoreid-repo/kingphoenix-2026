@@ -1,7 +1,7 @@
 # Uji takeoff → AUTO waypoint → LAND
 
 Status 14 September 2026: implementasi eksperimen pada `feat/auto-waypoint-test`,
-berbasis perbaikan ARM/takeoff PR #1. 33 unit test dengan state/protokol tiruan
+berbasis perbaikan ARM/takeoff PR #1. 46 unit test dengan state/protokol tiruan
 lulus; **belum diuji SITL maupun penerbangan fisik**.
 
 ## Siapkan waypoint
@@ -40,8 +40,10 @@ python runtestwp.py --strat r --goto 1-2 --execute --confirm-flight-area-clear
 `-goto` juga diterima. `r/l` berarti RIGHT/LEFT. `1-1` hanya WP1,
 `1-2` berarti rentang WP1 hingga WP2 (inklusif), `2-2` hanya WP2.
 Drone tidak perlu pergi ke WP1 atau home sebelum takeoff menuju WP2.
-Posisi horizontal memakai koordinat global yang tersimpan; tinggi tetap relatif
-terhadap home FC, **bukan LiDAR atau otomatis relatif terhadap tanah lokasi baru**.
+Posisi horizontal memakai koordinat global yang tersimpan; tinggi **waypoint AUTO** tetap relatif
+terhadap home FC. Takeoff memakai angka tinggi waypoint pertama sebagai target
+LiDAR sensor-ke-tanah, lalu BRAKE terverifikasi sebelum AUTO. Kedua acuan ini
+berbeda; perubahan ini tidak menjadikan seluruh cruise mengikuti LiDAR.
 Runner tidak mengirim DO_SET_HOME; perilaku penetapan home saat arm tetap milik FC.
 
 Opsi: `--speed 1.0` m/s (0.2–3), `--max-leg 100` m (1–200),
@@ -58,9 +60,12 @@ mengikuti DO_CHANGE_SPEED dan bisa tetap memengaruhi misi FC berikutnya.
    Upload harus diterima dan semua item dibaca balik sebelum ARM. Backup adalah
    rekaman MAVLink JSON untuk pemulihan manual, bukan file impor Mission Planner.
 3. GUIDED → ARM terverifikasi → TAKEOFF tanpa sleep motor tambahan. Takeoff
-   diverifikasi memakai relative altitude FC; kontrol takeoff berbasis LiDAR belum ada.
-4. Memilih indeks misi pertama dan memverifikasi MISSION_CURRENT, lalu meminta AUTO
-   dan menunggu heartbeat AUTO. Cruise selanjutnya dijalankan autopilot.
+   memakai target awal FC dengan margin kenaikan 5%. LiDAR mencapai target memicu
+   BRAKE; ACK TAKEOFF, heartbeat BRAKE dan tinggi stabil ±10 cm ≥0.5 s wajib terverifikasi.
+   Lihat [kontrak takeoff LiDAR](VERIFIED_TAKEOFF.md).
+4. Dalam BRAKE, periksa LiDAR tetap valid/dekat target. Memilih indeks misi pertama dan memverifikasi MISSION_CURRENT, lalu meminta AUTO
+   dan menunggu heartbeat AUTO. LiDAR hilang sebelum AUTO membatalkan kelanjutan.
+   Cruise selanjutnya dijalankan autopilot.
 5. DONE hanya setelah seluruh waypoint menerima MISSION_ITEM_REACHED, FC melaporkan
    ON_GROUND yang fresh, dan heartbeat menunjukkan disarmed. NAV_LAND dapat berjalan
    dengan mode tetap AUTO; tampilan tidak harus berubah menjadi mode LAND.
@@ -81,8 +86,10 @@ python -m unittest discover -s tests -v
 python runtestwp.py --help
 ```
 
-33 unit test mencakup kontrak takeoff, rentang WP, penolakan koordinat lama/invalid,
+46 unit test mencakup kontrak takeoff, rentang WP, penolakan koordinat lama/invalid,
 backup/upload/readback misi, serta penolakan DONE pada early LAND, abort,
 mode override, belum landed, dan waypoint yang belum terkonfirmasi.
 Pengujian ini tidak membuktikan kompatibilitas firmware FC atau perilaku terbang.
-Validasi SITL urutan GUIDED→AUTO→NAV_LAND dan abort diperlukan sebelum uji fisik.
+Validasi SITL urutan GUIDED→BRAKE→AUTO→NAV_LAND dan abort diperlukan sebelum uji fisik.
+
+Dalam BRAKE, ambil alih dengan pindah mode RC terlebih dahulu; input stick diabaikan.
