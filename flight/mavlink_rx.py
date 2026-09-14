@@ -53,11 +53,21 @@ class MavlinkRxWorker(threading.Thread):
             self._mirror_packet(msg)
 
             v = self.state.vehicle
-            v.mark_message(msg_type, now)
             try:
                 src_sys = int(msg.get_srcSystem()); src_comp = int(msg.get_srcComponent())
             except Exception:
                 src_sys, src_comp = 0, 0
+
+            # Navigation freshness must only reflect the configured FC.
+            if src_sys != self.connection.target_system or src_comp != self.connection.target_component:
+                continue
+            v.mark_message(msg_type, now)
+            upload_queue = getattr(self, "mission_transfer_queue", None)
+            if upload_queue is not None and msg_type in (
+                    "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ITEM", "MISSION_REQUEST_INT",
+                    "MISSION_REQUEST", "MISSION_ACK", "MISSION_ITEM_REACHED"):
+                try: upload_queue.put_nowait(msg)
+                except Exception: pass
 
             if msg_type == "HEARTBEAT":
                 if src_sys == self.connection.target_system and src_comp == self.connection.target_component:
@@ -150,6 +160,9 @@ class MavlinkRxWorker(threading.Thread):
                     v.rangefinder_source = "RANGEFINDER_LEGACY"
                     v.rangefinder_last_ns = now
 
+            elif msg_type == "EXTENDED_SYS_STATE":
+                v.landed_state = int(msg.landed_state)
+
             elif msg_type == "MISSION_CURRENT":
                 v.current_mission_item = int(msg.seq)
 
@@ -179,3 +192,4 @@ class MavlinkRxWorker(threading.Thread):
                                                     "timestamp_ns": record.timestamp_ns})
 
             self._check_heartbeat_loss()
+
