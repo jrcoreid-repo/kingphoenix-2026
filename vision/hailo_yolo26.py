@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+import json
 import time
 import threading
 
@@ -7,6 +8,7 @@ from vision.hailo_front_ai import FrontHailoAi, FrontAiResult
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ACTIVE_MODEL_CONFIG = PROJECT_ROOT / "config" / "active_model.json"
 
 
 def _resolve_model_path(value):
@@ -21,11 +23,26 @@ def _resolve_model_path(value):
     return str((PROJECT_ROOT / path).resolve())
 
 
+def _configured_detector_hef(default_value):
+    """Prefer config/active_model.json when present and ACTIVE.
+
+    Falls back to the detector HEF from system.json for backward compatibility.
+    """
+    try:
+        data = json.loads(ACTIVE_MODEL_CONFIG.read_text(encoding="utf-8"))
+        if str(data.get("status", "")).upper() == "ACTIVE" and data.get("hef"):
+            return data["hef"]
+    except Exception:
+        pass
+    return default_value
+
+
 class HailoYolo26(FrontHailoAi):
     """V2 detector-only runtime. Does not load or activate the pose HEF."""
 
     def __init__(self, cfg, frame_w=1920, frame_h=1200):
         detector = cfg["detector"]
+        detector_hef = _configured_detector_hef(detector["hef"])
         legacy = {
             "model_size": cfg.get("model_size", 640),
             "front": {
@@ -37,7 +54,7 @@ class HailoYolo26(FrontHailoAi):
                     "iou_threshold": 0.6,
                 },
                 "fallback": {
-                    "hef": _resolve_model_path(detector["hef"]),
+                    "hef": _resolve_model_path(detector_hef),
                     "gate_class_id": cfg.get("front", {}).get("detector_class_id", 1),
                     "confidence_threshold": detector.get("confidence_threshold", .25),
                     "iou_threshold": detector.get("iou_threshold", .45),
@@ -55,8 +72,6 @@ class HailoYolo26(FrontHailoAi):
         if not Path(self.detector_hef_path).exists():
             raise FileNotFoundError(self.detector_hef_path)
 
-        # A previous failed open can leave partially-created HailoRT objects.
-        # Always tear them down before another initialization attempt.
         self.close()
         self.last_open_error = None
 
@@ -80,8 +95,6 @@ class HailoYolo26(FrontHailoAi):
             self._detector_context = InferVStreams(self.detector_group, inp, out)
             self.detector_pipeline = self._detector_context.__enter__()
 
-            # HailoRT requires the configured network group to stay ACTIVATED
-            # for the whole lifetime of InferVStreams inference.
             self._activation_context = self.detector_group.activate()
             self._activation_context.__enter__()
 
@@ -101,7 +114,6 @@ class HailoYolo26(FrontHailoAi):
     def close(self):
         self.ready = False
 
-        # Stop new inference before tearing down Hailo resources.
         with self._infer_lock:
             if self._activation_context is not None:
                 try:
@@ -130,9 +142,6 @@ class HailoYolo26(FrontHailoAi):
             self.device = None
 
     def _run_detector(self, input_tensor, detector_class_id):
-        # One shared detector is used by FRONT/BOTTOM. Router normally keeps
-        # only one camera ACTIVE, while this lock also protects the exact
-        # transition instant between cameras.
         with self._infer_lock:
             if not self.ready or self._activation_context is None:
                 raise RuntimeError("YOLO26 network group is not active")
