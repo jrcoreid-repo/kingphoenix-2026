@@ -10,15 +10,15 @@ laporan pengujian lapangan, dan pekerjaan yang belum diimplementasikan.
 ## Uji waypoint terbaru
 
 Branch `feat/auto-waypoint-test` menambahkan `runtestwp.py`: **GUIDED takeoff →
-AUTO waypoint terpilih → LAND di titik terakhir**. Contoh preview:
+BRAKE terverifikasi → AUTO waypoint terpilih → LAND di titik terakhir**. Contoh preview:
 `python runtestwp.py --strat r --goto 2-2`. Rentang `1-2` berarti WP1 lalu WP2;
 `2-2` berarti hanya WP2, dimulai dari posisi takeoff saat ini.
 
 Waypoint disimpan melalui GCS dengan koordinat global; titik lokal lama perlu
 capture ulang. Misi di-backup, di-upload dan dibaca balik sebelum ARM.
-DONE memerlukan waypoint reached, landed, dan disarmed. **33 unit test lulus;
-belum validasi SITL atau penerbangan fisik.** Tinggi takeoff masih relative altitude
-FC, belum menggunakan LiDAR sebagai pengendali. Lihat [panduan lengkap](WAYPOINT_TEST.md)
+DONE memerlukan waypoint reached, landed, dan disarmed. **46 unit test lulus;
+belum validasi SITL atau penerbangan fisik.** Takeoff sekarang memakai LiDAR untuk memicu BRAKE dan memverifikasi tinggi stabil;
+cruise AUTO tetap memakai relative altitude FC. Lihat [panduan lengkap](WAYPOINT_TEST.md)
 untuk perintah execute, capture waypoint, streaming dan abort.
 
 ## Status branch
@@ -48,7 +48,7 @@ Nomor versi runtime Pi dan GCS tidak selalu sama: `main.py` menunjuk stack
 | GCS | ARM/DISARM dan perubahan mode saat disarmed dengan pengaman bench. Takeoff melalui tombol GCS belum diaktifkan. |
 | Mission Planner bridge | Pengaturan IP dari GCS, filter sumber paket masuk, dan perbaikan kontrol panel yang terpotong melalui modal ringkas. |
 | ARM/takeoff baru | Implementasi dan 20 uji simulasi tersedia di branch PR #1; belum digabung ke dev. |
-| Kontrol takeoff LiDAR | **Belum diimplementasikan.** Verifikasi takeoff pada PR #1 masih memakai relative altitude FC. |
+| Kontrol takeoff LiDAR | Branch ini: LiDAR memicu BRAKE, lalu verifikasi tinggi ±10 cm stabil ≥0.5 s; digunakan kedua tool. Belum diuji SITL/fisik. |
 
 ## Arsitektur vision
 
@@ -96,61 +96,33 @@ Tes vision:
 python3 -m tools.vision_stream_test
 ```
 
-## ARM dan immediate takeoff — branch PR #1
+## Takeoff dengan pengereman berdasarkan LiDAR
 
-Urutan pada `fix/verified-immediate-takeoff`:
+Semua pemanggil `CommandManager.takeoff()` memakai jalur yang sama: tool
+`tools.flight_command_test`, `runtestwp.py`, dan TAKEOFF pada step executor.
+Riwayat PR #1 memakai relative altitude untuk verifikasi; **branch ini menggantinya
+dengan LiDAR**. ARM tetap diverifikasi dan TAKEOFF dikirim tanpa delay motor tambahan.
 
-1. Pastikan heartbeat dan relative altitude FC masih baru.
-2. Pindah ke GUIDED dan verifikasi mode.
-3. Kirim ARM; tunggu ACK diterima dan heartbeat setelah pengiriman menunjukkan armed.
-4. Kirim TAKEOFF segera setelah ARM terverifikasi, tanpa tambahan delay tetap.
-5. Verifikasi ACK takeoff dan tiga sampel relative altitude baru di sekitar target.
+`takeoff(1)` berarti target sekitar 1 m jarak vertikal sensor ke tanah.
+Target awal FC diterjemahkan dari relative altitude saat ini + sisa kenaikan LiDAR ×1.05.
+LiDAR mencapai target → minta BRAKE → verifikasi heartbeat BRAKE dan tinggi stabil.
+DONE memerlukan ACK TAKEOFF diterima dan minimal lima sampel LiDAR baru selama
+≥0.5 s dalam ±10 cm dengan perubahan tinggi ≤0.15 m/s.
 
-FC tetap mengatur spool motor dan respons naik. Immediate berarti tidak ada
-jeda tambahan di RPi, bukan throttle penuh atau jaminan langsung lepas tanah.
+- Takeoff-only selesai dengan pesawat tetap armed dan menahan posisi di BRAKE.
+- Runner waypoint: GUIDED takeoff → BRAKE terverifikasi → AUTO → NAV_LAND.
+- Hilang LiDAR sebelum AUTO: misi tidak lanjut. Data basi/tidak valid tidak diganti barometer.
+- Ambil alih dengan **pindah mode melalui RC**, karena BRAKE mengabaikan input stick.
+- Cruise waypoint tetap home-relative (default 1.2 m), bukan terrain following LiDAR.
 
-- ARM ditolak: TAKEOFF tidak dikirim.
-- ACK `IN_PROGRESS`: tunggu hasil akhir dengan timeout terbatas.
-- Setelah pengiriman berhasil, perintah yang memerlukan ACK tidak diulang otomatis.
-- ACK/state timeout: `UNCONFIRMED`; perintah di FC mungkin masih aktif.
-- Link hilang/stale, disarm atau perubahan mode: verifikasi dihentikan; ini bukan pembatalan perintah di FC.
-- Tidak ada DISARM otomatis saat hasil takeoff meragukan.
-- Sukses mencapai target belum berarti hover stabil.
+```bash
+python3 -m tools.flight_command_test takeoff --altitude 1 --confirm-flight-area-clear
+```
 
-**Verifikasi ketinggian di PR ini masih GLOBAL_POSITION_INT.relative_alt,
-bukan LiDAR.** Data LiDAR tidak dipakai untuk menggantikan acuan home secara diam-diam.
-
-20 uji memakai jam deterministik dan respons FC simulasi, mencakup ARM lambat,
-ACK hilang/sumber salah, penolakan, IN_PROGRESS, telemetry stale/beku, tidak naik,
-overshoot dan interupsi status terbang. Belum ada pengujian SITL/FC fisik untuk patch ini.
-
-[Lihat prosedur dan batasan lengkap](https://github.com/jrcoreid-repo/kingphoenix-2026/blob/fix/verified-immediate-takeoff/VERIFIED_TAKEOFF.md).
-
-## Tahap berikutnya: takeoff dan hold berbasis LiDAR
-
-Kebutuhan operator: `takeoff(1)` ditujukan untuk mencapai sekitar 1 m dari tanah,
-dengan LiDAR sebagai umpan balik pencapaian dan penahanan ketinggian.
-
-**Status: rancangan kebutuhan, belum ada implementasi atau hasil uji.**
-
-Rencana alur:
-1. ARM terverifikasi dan mulai lepas landas.
-2. Gunakan LiDAR valid untuk mengatur kenaikan, dengan perlambatan mendekati target.
-3. Kirim kontrol aktif untuk menahan ketinggian.
-4. Tandai DONE setelah beberapa sampel valid berada dalam toleransi dan kenaikan mereda.
-
-Menandai DONE di RPi tidak menghentikan target naik yang masih aktif di FC.
-Menambah target relative altitude sebesar 5% saja tidak menyelesaikan masalah
-perbedaan acuan sensor maupun memastikan drone berhenti pada jarak LiDAR yang diinginkan.
-
-Pekerjaan yang masih diperlukan:
-- Pilih dan validasi jalur kontrol ketinggian sesuai firmware ArduPilot dan mode.
-- Tetapkan acuan jarak sensor/airframe, pengaruh kemiringan, dan permukaan di bawah drone.
-- Validasi umur sampel, rentang, orientasi dan kualitas pembacaan LiDAR.
-- Ukur laju telemetry aktual: konfigurasi meminta `DISTANCE_SENSOR` **20 Hz**;
-  ini bukan bukti laju aktual 10 atau 20 Hz.
-- Definisikan perlambatan, toleransi DONE, hold, batas waktu dan respons kehilangan LiDAR.
-- Uji simulasi/SITL, lalu pengujian fisik bertahap sebelum digunakan untuk misi.
+BRAKE memiliki jarak pengereman; ini bukan jaminan berhenti tepat 1.00 m atau
+pengendali LiDAR kontinu. 46 unit test lulus, termasuk alur takeoff→BRAKE→AUTO→landing
+menggunakan FC simulasi. **Belum diuji SITL atau fisik**.
+[Lihat prosedur, batas sensor, timeout dan recovery](VERIFIED_TAKEOFF.md).
 
 ## Riwayat checkpoint
 
@@ -175,3 +147,5 @@ Pekerjaan yang masih diperlukan:
 Dokumen checkpoint lama dapat mencerminkan versi sebelumnya; gunakan tabel status
 branch dan tanggal pembaruan di atas untuk memahami cakupan capaian terbaru.
 
+
+| 14 September 2026 | Runner AUTO waypoint dan takeoff dengan pemicu BRAKE berbasis LiDAR; 46 unit test, belum SITL/fisik |
