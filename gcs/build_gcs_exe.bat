@@ -55,6 +55,7 @@ python -m PyInstaller ^
   --windowed ^
   --name Kingphoenix-GCS ^
   --paths gcs ^
+  --add-data "gcs\background.png;." ^
   --collect-all dearpygui ^
   --collect-all av ^
   --collect-all cv2 ^
