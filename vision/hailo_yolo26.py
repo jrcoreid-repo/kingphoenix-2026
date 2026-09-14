@@ -6,6 +6,21 @@ import threading
 from vision.hailo_front_ai import FrontHailoAi, FrontAiResult
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_model_path(value):
+    """Resolve HEF paths without breaking existing absolute Pi paths.
+
+    Absolute paths are preserved. Relative paths are anchored to the repository
+    root so model configuration remains portable across Raspberry Pi clones.
+    """
+    path = Path(str(value)).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str((PROJECT_ROOT / path).resolve())
+
+
 class HailoYolo26(FrontHailoAi):
     """V2 detector-only runtime. Does not load or activate the pose HEF."""
 
@@ -22,7 +37,7 @@ class HailoYolo26(FrontHailoAi):
                     "iou_threshold": 0.6,
                 },
                 "fallback": {
-                    "hef": detector["hef"],
+                    "hef": _resolve_model_path(detector["hef"]),
                     "gate_class_id": cfg.get("front", {}).get("detector_class_id", 1),
                     "confidence_threshold": detector.get("confidence_threshold", .25),
                     "iou_threshold": detector.get("iou_threshold", .45),
