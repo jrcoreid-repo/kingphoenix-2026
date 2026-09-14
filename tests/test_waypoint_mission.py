@@ -106,7 +106,7 @@ class Tests(unittest.TestCase):
                            global_lat_deg=-7.8,global_lon_deg=110.3,relative_alt_m=1.2)
             v.last_heartbeat_ns=v.global_position_last_ns=time.monotonic_ns()
             for kind in ('GPS_RAW_INT','GLOBAL_POSITION_INT','EXTENDED_SYS_STATE'):v.mark_message(kind)
-            r=NS(state=NS(vehicle=v,system={}),stop_event=NS(is_set=lambda:False),tx=NS())
+            r=NS(state=NS(vehicle=v,system={}),stop_event=NS(is_set=lambda:False),tx=NS(),command=NS(state=NS(vehicle=v)))
             t=NS(q=queue.Queue(),clear=lambda:None,ids=lambda:(1,1),send=lambda *a:None)
             r.tx.send_mode=lambda *a:True
             test=wp.FlightTest(r,NS(goto_timeout=1,land_timeout=1))
