@@ -157,7 +157,6 @@ def start_auto_and_wait_sequence(test: DirectFlightTest, labels: list[str],
     reached = set()
     test.reached_seq = None
 
-    # Select first mission item before changing to AUTO.
     try:
         test.master.mav.mission_set_current_send(
             test.master.target_system,
@@ -212,6 +211,32 @@ def start_auto_and_wait_sequence(test: DirectFlightTest, labels: list[str],
     )
 
 
+def land_and_wait(test: DirectFlightTest, timeout: float = 20.0):
+    """Switch to LAND after successful AUTO completion and wait for disarm."""
+    print("[LAND] final waypoint complete; switching AUTO -> LAND")
+    test.set_mode("LAND")
+
+    deadline = time.monotonic() + float(timeout)
+    last_print = 0.0
+    while time.monotonic() < deadline:
+        test.poll(0.15)
+        now = time.monotonic()
+
+        if not test.heartbeat_ok():
+            raise FlightTestError("heartbeat lost while waiting for LAND completion")
+
+        if now - last_print >= 0.5:
+            lidar_text = f"{test.lidar:.2f}m" if test.lidar_ok() else "--"
+            print(f"[LAND] mode={test.mode} armed={test.armed} LiDAR={lidar_text}")
+            last_print = now
+
+        if not test.armed:
+            print("[LAND] COMPLETE vehicle DISARMED")
+            return
+
+    raise FlightTestError("LAND timeout: vehicle still armed after 20 s")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Kingphoenix guarded takeoff + AUTO waypoint/range test"
@@ -250,9 +275,8 @@ def main():
     print("=================================================")
     print(f"[PLAN] takeoff target : {args.alt:.2f} m")
     print(f"[PLAN] AUTO altitude  : {AUTO_WP_ALT_M:.2f} m FIXED")
-    print(f"[PLAN] route          : {' -> '.join(labels)}")
+    print(f"[PLAN] route          : {' -> '.join(labels)} -> LAND")
 
-    # Hard-block ALL requested waypoints before opening MAVLink or sending anything.
     saved_waypoints = []
     try:
         for wp_num in wp_numbers:
@@ -298,8 +322,6 @@ def main():
                 }
             )
 
-        # For a single WP, reject a nearly zero-length test. For a range such as 2-5,
-        # WP2 may legitimately be near the current/home position, so do not reject it.
         if len(mission_items) == 1:
             _, _, distance_m = test.local_waypoint_to_global(saved_waypoints[0])
             if distance_m < 0.30:
@@ -308,14 +330,12 @@ def main():
                     "single-WP AUTO test blocked to avoid an ambiguous no-movement test"
                 )
 
-        # Upload and ACK the complete route while DISARMED.
         upload_auto_waypoints(
             test,
             mission_items,
             acceptance_radius_m=args.accept_radius,
         )
 
-        # --alt applies only to takeoff. Takeoff completion is LiDAR-confirmed.
         test.takeoff_lidar_confirmed(
             args.alt,
             margin=args.margin,
@@ -334,8 +354,8 @@ def main():
             timeout=args.auto_timeout,
         )
 
-        print("[RESULT] TAKEOFF + AUTO WAYPOINT SEQUENCE PASS")
-        print("[NOTE] Final waypoint reached. Pilot retains RC takeover; choose LOITER/LAND as appropriate.")
+        land_and_wait(test)
+        print("[RESULT] TAKEOFF + AUTO WAYPOINT + LAND TEST PASS")
         return 0
 
     except KeyboardInterrupt:
