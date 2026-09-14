@@ -1,0 +1,8 @@
+{
+  "engine": "YOLO26_ONLY",
+  "hef": "models/hailo8/yolo26_gate_v2.hef",
+  "target_hardware": "Hailo-8",
+  "input_size": 640,
+  "sha256": "f19dacab1740c0eede457498e44ba7796a70655d6c28625af0bfdd30868aea44",
+  "status": "ACTIVE"
+}
