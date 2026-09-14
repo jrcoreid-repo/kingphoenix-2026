@@ -1,14 +1,12 @@
+import math
 from config import load_json, save_json_atomic
 
 
 class WaypointManager:
-    """Store field-captured horizontal waypoints with one nominal altitude.
+    """Capture global horizontal waypoints via existing GCS SAVE WAYPOINT.
 
-    GCS SAVE WAYPOINT captures the current LOCAL_POSITION_NED x/y only. The
-    mission altitude is intentionally not taken from the vehicle's instantaneous
-    z value; every saved waypoint gets the configured nominal altitude (1.2 m
-    by default). Tools and the later mission runtime therefore consume the same
-    stable JSON contract.
+    x/y retained for legacy tools; new AUTO tests use persistent WGS84 lat/lon.
+    alt_m remains a nominal altitude relative to the FC home, not LiDAR AGL.
     """
 
     def __init__(self, state):
@@ -38,9 +36,15 @@ class WaypointManager:
         if not self.edit_unlocked:
             return False, "EDIT MODE LOCKED"
 
+        if self.state.system.get("wp_test_active"):
+            return False, "WAYPOINT TEST ACTIVE; edits locked"
         v = self.state.vehicle
-        if None in (v.x, v.y):
-            return False, "LOCAL_POSITION_NED x/y unavailable"
+        if (not v.connected or v.heartbeat_age_s() > 2.5 or
+                v.global_position_age_s() > 0.5 or
+                v.message_age_s("GPS_RAW_INT") > 1.5 or (v.gps_fix_type or 0) < 3):
+            return False, "FRESH GLOBAL POSITION + GPS 3D FIX REQUIRED"
+        if any(value is None or not math.isfinite(value) for value in (v.global_lat_deg, v.global_lon_deg)):
+            return False, "GLOBAL POSITION unavailable"
 
         key = strategy.upper()
         wp_key = f"WP{int(wp)}"
@@ -48,12 +52,16 @@ class WaypointManager:
             return False, f"UNKNOWN WAYPOINT {key} {wp_key}"
 
         self.data[key][wp_key] = {
-            "x": float(v.x),
-            "y": float(v.y),
+            "x": v.x,
+            "y": v.y,
+            "lat_deg": float(v.global_lat_deg),
+            "lon_deg": float(v.global_lon_deg),
+            "frame": "GLOBAL_RELATIVE_ALT",
             "alt_m": float(self.nominal_alt_m),
         }
         save_json_atomic("waypoints.json", self.data)
         return True, (
-            f"{wp_key} {key} saved x={float(v.x):.2f} y={float(v.y):.2f} "
+            f"{wp_key} {key} saved lat={v.global_lat_deg:.7f} lon={v.global_lon_deg:.7f} "
             f"alt={self.nominal_alt_m:.2f}m"
         )
+
