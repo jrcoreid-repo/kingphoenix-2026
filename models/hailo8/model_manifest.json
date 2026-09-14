@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "active_model": "yolo26_gate_v2.hef",
+  "target_hardware": "Hailo-8",
+  "task": "YOLO26 detector",
+  "input_size": 640,
+  "repository_path": "models/hailo8/yolo26_gate_v2.hef",
+  "sha256": "f19dacab1740c0eede457498e44ba7796a70655d6c28625af0bfdd30868aea44",
+  "size_bytes": 7606771,
+  "status": "PENDING_BINARY_UPLOAD",
+  "uploaded_source_name": "yolo26_baru.hef",
+  "notes": "Prepared 2026-09-14. Keep config/system.json on the previous working HEF until this binary exists in the repository."
+}
