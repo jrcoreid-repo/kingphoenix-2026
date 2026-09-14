@@ -3,14 +3,29 @@
 Sistem drone otonom dengan Raspberry Pi, ArduPilot, dual-camera streaming,
 YOLO26 pada Hailo, dan Ground Control Station (GCS).
 
-**Status diperbarui: 10 September 2026.**
+**Status diperbarui: 14 September 2026.**
 Dokumen ini membedakan fitur yang ada di `dev`, perubahan pada branch pengembangan,
 laporan pengujian lapangan, dan pekerjaan yang belum diimplementasikan.
+
+## Uji waypoint terbaru
+
+Branch `feat/auto-waypoint-test` menambahkan `runtestwp.py`: **GUIDED takeoff →
+AUTO waypoint terpilih → LAND di titik terakhir**. Contoh preview:
+`python runtestwp.py --strat r --goto 2-2`. Rentang `1-2` berarti WP1 lalu WP2;
+`2-2` berarti hanya WP2, dimulai dari posisi takeoff saat ini.
+
+Waypoint disimpan melalui GCS dengan koordinat global; titik lokal lama perlu
+capture ulang. Misi di-backup, di-upload dan dibaca balik sebelum ARM.
+DONE memerlukan waypoint reached, landed, dan disarmed. **33 unit test lulus;
+belum validasi SITL atau penerbangan fisik.** Tinggi takeoff masih relative altitude
+FC, belum menggunakan LiDAR sebagai pengendali. Lihat [panduan lengkap](WAYPOINT_TEST.md)
+untuk perintah execute, capture waypoint, streaming dan abort.
 
 ## Status branch
 
 | Branch | Status |
 |---|---|
+| `feat/auto-waypoint-test` | Runner AUTO waypoint dan dokumentasi; eksperimen berbasis branch PR #1, belum merge dev |
 | `main` | Checkpoint lama V2.1; bukan acuan fitur terbaru |
 | `dev` | Stack V2.3: runtime Pi, GCS V2.3.5, guarded bench control dan Mission Planner bridge |
 | `fix/verified-immediate-takeoff` | Perbaikan ARM/takeoff; 20 uji simulasi lulus, belum validasi SITL atau drone fisik |
@@ -159,3 +174,4 @@ Pekerjaan yang masih diperlukan:
 
 Dokumen checkpoint lama dapat mencerminkan versi sebelumnya; gunakan tabel status
 branch dan tanggal pembaruan di atas untuk memahami cakupan capaian terbaru.
+
