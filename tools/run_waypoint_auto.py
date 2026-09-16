@@ -15,8 +15,8 @@ from tools.flight_test_common import DirectFlightTest, FlightTestError, load_jso
 from tools.check_waypoints import request_fc_mission
 from tools.run_takeoff_lidar_test import lidar_authoritative_takeoff
 
-# ArduPilot readback layout used by this runner:
-#   FC seq 0 = virtual/internal HOME
+# ArduPilot mission storage:
+#   FC seq 0 = reserved/internal HOME
 #   FC seq 1 = MAV_CMD_NAV_TAKEOFF marker
 #   FC seq 2 = first real route waypoint (WP1 for --wp 1...)
 FC_HOME_SEQ = 0
@@ -104,17 +104,24 @@ def capture_ground_baseline(test: DirectFlightTest, duration_s=1.5) -> tuple[flo
 
 
 def upload_mission(test: DirectFlightTest, items: list[dict], acceptance_radius_m=0.5, timeout=10.0):
-    """Upload TAKEOFF + route items as MISSION_ITEM_INT while DISARMED.
+    """Upload reserved HOME slot + TAKEOFF + route as MISSION_ITEM_INT.
 
-    Upload sequence 0 is TAKEOFF and upload sequence 1 is WP1. ArduPilot adds
-    its virtual HOME on readback, so those become FC seq 1 and seq 2.
+    ArduPilot reserves mission index 0 for HOME. The upload count therefore
+    includes that slot. A valid HOME placeholder is sent at upload seq 0;
+    ArduPilot ignores its supplied contents and keeps AHRS HOME there. TAKEOFF
+    is sent at seq 1 and WP1 starts at seq 2.
     """
     if not items:
         raise FlightTestError("mission is empty")
+    if test.global_pos is None:
+        raise FlightTestError("GLOBAL_POSITION_INT unavailable for HOME upload slot")
+
+    home_lat = float(test.global_pos[0])
+    home_lon = float(test.global_pos[1])
 
     test.clear_mission()
     mtype = mavutil.mavlink.MAV_MISSION_TYPE_MISSION
-    count = len(items)
+    count = len(items) + 1  # seq0 HOME + TAKEOFF + route WPs
     try:
         test.master.mav.mission_count_send(
             test.master.target_system, test.master.target_component, count, mtype
@@ -136,22 +143,30 @@ def upload_mission(test: DirectFlightTest, items: list[dict], acceptance_radius_
             if upload_seq < 0 or upload_seq >= count:
                 raise FlightTestError(f"FC requested invalid upload seq={upload_seq}")
 
-            item = items[upload_seq]
-            command = int(item["command"])
-            alt_m = float(item["alt_m"])
-            lat = float(item.get("lat", 0.0))
-            lon = float(item.get("lon", 0.0))
-
-            # TAKEOFF intentionally uses 0/0 position like the proven legacy
-            # companion mission. It is a structural marker and is skipped after
-            # the LiDAR-authoritative GUIDED takeoff.
-            if command == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            if upload_seq == FC_HOME_SEQ:
+                label = "HOME_SLOT"
+                command = mavutil.mavlink.MAV_CMD_NAV_WAYPOINT
+                lat = home_lat
+                lon = home_lon
+                alt_m = 0.0
                 p1 = p2 = p3 = p4 = 0.0
             else:
-                p1 = 0.0
-                p2 = float(acceptance_radius_m)
-                p3 = 0.0
-                p4 = float("nan")
+                item = items[upload_seq - 1]
+                label = str(item["label"])
+                command = int(item["command"])
+                alt_m = float(item["alt_m"])
+                lat = float(item.get("lat", 0.0))
+                lon = float(item.get("lon", 0.0))
+
+                if command == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+                    # Structural TAKEOFF marker. Physical launch is performed
+                    # separately by the LiDAR-authoritative GUIDED controller.
+                    p1 = p2 = p3 = p4 = 0.0
+                else:
+                    p1 = 0.0
+                    p2 = float(acceptance_radius_m)
+                    p3 = 0.0
+                    p4 = float("nan")
 
             args = [
                 test.master.target_system,
@@ -160,7 +175,7 @@ def upload_mission(test: DirectFlightTest, items: list[dict], acceptance_radius_
                 mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
                 command,
                 0,
-                1 if upload_seq == 0 else 0,
+                0,
                 p1, p2, p3, p4,
                 int(round(lat * 1e7)),
                 int(round(lon * 1e7)),
@@ -174,9 +189,9 @@ def upload_mission(test: DirectFlightTest, items: list[dict], acceptance_radius_
             sent.add(upload_seq)
             req = "INT" if t == "MISSION_REQUEST_INT" else "LEGACY->INT"
             print(
-                f"[MISSION] sent uploadSeq={upload_seq} {item['label']} "
+                f"[MISSION] sent uploadSeq={upload_seq} {label} "
                 f"cmd={command} lat={lat:.7f} lon={lon:.7f} "
-                f"FCrelAlt={alt_m:.2f}m request={req}"
+                f"alt={alt_m:.2f}m request={req}"
             )
 
         elif t == "MISSION_ACK":
@@ -187,7 +202,9 @@ def upload_mission(test: DirectFlightTest, items: list[dict], acceptance_radius_
                 raise FlightTestError(
                     f"mission ACK before all items sent ({len(sent)}/{count})"
                 )
-            print(f"[MISSION] TAKEOFF + {count-1} waypoint(s) uploaded and ACKed")
+            print(
+                f"[MISSION] HOME slot + TAKEOFF + {len(items)-1} waypoint(s) uploaded and ACKed"
+            )
             return
 
     raise FlightTestError(f"mission upload timeout ({len(sent)}/{count})")
@@ -196,7 +213,7 @@ def upload_mission(test: DirectFlightTest, items: list[dict], acceptance_radius_
 def verify_uploaded_mission(test: DirectFlightTest, items: list[dict], position_tol_m=0.30, alt_tol_m=0.05):
     print("[MISSION] readback verification while DISARMED ...")
     fc_items = request_fc_mission(test)
-    expected_count = len(items) + 1  # virtual HOME + uploaded items
+    expected_count = len(items) + 1  # HOME + TAKEOFF + route WPs
     if len(fc_items) != expected_count:
         raise FlightTestError(
             f"FC mission count mismatch: raw={len(fc_items)} expected={expected_count} "
@@ -350,7 +367,7 @@ def main():
     print(f"[PLAN] route={' -> '.join(labels)} -> LAND")
     print(f"[PLAN] physical takeoff target={args.alt:.2f}m raw LiDAR AGL")
     print("[PLAN] mission upload/readback happens while DISARMED")
-    print("[PLAN] FC layout after readback: seq0 HOME, seq1 TAKEOFF, seq2 WP1 ...")
+    print("[PLAN] FC layout: seq0 HOME, seq1 TAKEOFF, seq2 WP1 ...")
     print("[PLAN] LiDAR GUIDED takeoff executes physically; AUTO starts at seq2 WP1")
     if args.margin is not None:
         print("[NOTE] --margin ignored; LiDAR remains takeoff authority")
@@ -389,9 +406,6 @@ def main():
             f"[GROUND-BASELINE] LiDAR={ground_lidar:.2f}m FCrelAlt={ground_rel:.2f}m"
         )
 
-        # Convert requested physical AGL into the FC's current relative-alt
-        # frame while still on the ground. This prevents a vertical step when
-        # AUTO takes over from the successful LiDAR-controlled takeoff.
         takeoff_target_rel = ground_rel + (float(args.alt) - ground_lidar)
         if not math.isfinite(takeoff_target_rel) or not -10.0 <= takeoff_target_rel <= 10.0:
             raise FlightTestError(
