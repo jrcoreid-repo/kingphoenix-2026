@@ -18,6 +18,11 @@ from tools.check_waypoints import request_fc_mission
 #   seq 1 = MAV_CMD_NAV_TAKEOFF
 #   seq 2 = first route waypoint
 #   seq 3 = second route waypoint, ...
+#
+# IMPORTANT FIELD FINDING:
+# GLOBAL_POSITION_INT.relative_alt observed before ARM must NOT be used to
+# derive post-ARM REL_HOME mission altitude. HOME/reference may change on ARM.
+# Mission TAKEOFF/WP altitudes are therefore written directly in REL_HOME.
 FC_HOME_SEQ = 0
 FC_TAKEOFF_SEQ = 1
 FC_FIRST_WP_SEQ = 2
@@ -151,8 +156,6 @@ def upload_mission(
                     p3 = 0.0
                     p4 = float("nan")
 
-            # Important: autocontinue=1.  The previous runner used 0, which did
-            # not match a normal Mission Planner mission.
             args = [
                 test.master.target_system,
                 test.master.target_component,
@@ -160,7 +163,7 @@ def upload_mission(
                 mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
                 command,
                 0,  # current; selected explicitly after upload
-                1,  # autocontinue
+                1,  # autocontinue, matching normal Mission Planner mission
                 p1,
                 p2,
                 p3,
@@ -250,10 +253,27 @@ def verify_uploaded_mission(
     print("[MISSION] PRELOAD VERIFIED - Mission Planner style layout stored")
 
 
+def _post_arm_home_reference(test: DirectFlightTest, settle_s: float = 0.80):
+    """Log the post-ARM REL_HOME reference; never use pre-ARM relAlt for mission Z."""
+    deadline = time.monotonic() + float(settle_s)
+    while time.monotonic() < deadline:
+        test.poll(0.08)
+
+    rel_alt = None if test.global_pos is None else float(test.global_pos[2])
+    lidar = float(test.lidar) if test.lidar_ok() else None
+    rel_txt = "--" if rel_alt is None else f"{rel_alt:.2f}m"
+    lidar_txt = "--" if lidar is None else f"{lidar:.2f}m"
+    print(
+        f"[HOME-REF] post-ARM FCrelAlt={rel_txt} LiDAR={lidar_txt} | "
+        "mission Z remains direct REL_HOME; no bridge/pre-arm offset math"
+    )
+
+
 def select_takeoff_and_start_auto(test: DirectFlightTest):
-    """Arm outside AUTO, select TAKEOFF seq1, then enter AUTO."""
+    """Arm outside AUTO, observe post-ARM HOME reference, then start TAKEOFF seq1."""
     test.set_mode("GUIDED")
     test.arm()
+    _post_arm_home_reference(test)
 
     test.master.mav.mission_set_current_send(
         test.master.target_system,
@@ -312,8 +332,6 @@ def run_native_auto(
             agl = float(test.lidar)
 
             if not wp_phase:
-                # During climb, only protect against excessive height.  A floor
-                # guard would of course trip while the aircraft is taking off.
                 if agl > float(takeoff_ceiling_m):
                     high_since = high_since or now
                     if now - high_since > 0.35:
@@ -382,8 +400,8 @@ def main():
     ap.add_argument("--takeoff-timeout", type=float, default=15.0)
     ap.add_argument("--auto-timeout", type=float, default=60.0)
 
-    # Compatibility with older field commands.  These no longer control this
-    # Mission-Planner-style native AUTO path.
+    # Explicitly detect obsolete field flags so an old command cannot silently
+    # appear to affect this native-AUTO runner.
     ap.add_argument("--bridge-tol", type=float, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--tolerance", type=float, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--handoff", type=float, default=None, help=argparse.SUPPRESS)
@@ -393,6 +411,24 @@ def main():
     ap.add_argument("--ceiling", type=float, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--margin", type=float, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
+
+    legacy_flags = {
+        "--bridge-tol": args.bridge_tol,
+        "--tolerance": args.tolerance,
+        "--handoff": args.handoff,
+        "--climb-rate": args.climb_rate,
+        "--kick-alt": args.kick_alt,
+        "--hold": args.hold,
+        "--ceiling": args.ceiling,
+        "--margin": args.margin,
+    }
+    supplied_legacy = [name for name, value in legacy_flags.items() if value is not None]
+    if supplied_legacy:
+        raise SystemExit(
+            "Legacy option(s) no longer valid for native AUTO waypoint test: "
+            + ", ".join(supplied_legacy)
+            + ". Use --alt / --takeoff-ceiling / --auto-floor / --auto-ceiling instead."
+        )
 
     if not 0.30 <= float(args.alt) <= 5.0:
         raise SystemExit("--alt must be 0.30..5.00m")
@@ -410,7 +446,8 @@ def main():
     print(f"[PLAN] route=TAKEOFF({args.alt:.2f}m REL) -> {' -> '.join(labels)} -> LAND")
     print("[PLAN] preload while DISARMED: seq0 HOME, seq1 TAKEOFF, seq2 WP1 ...")
     print("[PLAN] AUTO starts at seq1 TAKEOFF; TAKEOFF is NOT skipped")
-    print("[PLAN] waypoint altitude is written directly as JSON relative altitude")
+    print("[PLAN] mission altitude is DIRECT REL_HOME; pre-ARM FCrelAlt is never added")
+    print("[PLAN] no deliberate hold/dwell: TAKEOFF completion -> next WP immediately")
     print("[PLAN] LiDAR is safety monitor only, not the vertical controller")
 
     try:
@@ -426,7 +463,11 @@ def main():
         if test.global_pos is None:
             raise FlightTestError("GLOBAL_POSITION_INT unavailable")
 
-        cur_lat, cur_lon, _ = test.global_pos
+        cur_lat, cur_lon, prearm_rel = test.global_pos
+        print(
+            f"[PREARM] FCrelAlt={prearm_rel:.2f}m (diagnostic only; NEVER used for mission altitude)"
+        )
+
         for label, wp in zip(labels, saved):
             d = distance_m(cur_lat, cur_lon, wp["lat"], wp["lon"])
             if d > 100.0:
