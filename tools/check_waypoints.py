@@ -12,6 +12,10 @@ from pymavlink import mavutil
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.flight_test_common import DirectFlightTest, FlightTestError, load_json
 
+FC_HOME_SEQ = 0
+FC_TAKEOFF_SEQ = 1
+FC_FIRST_WP_SEQ = 2
+
 
 def parse_wp_range(value: str) -> list[int]:
     raw = str(value).strip()
@@ -87,19 +91,14 @@ def frame_name(frame: int) -> str:
 
 
 def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
-    """Download raw ArduPilot mission list including virtual HOME seq=0."""
     mtype = mavutil.mavlink.MAV_MISSION_TYPE_MISSION
-
     try:
         test.master.mav.mission_request_list_send(
-            test.master.target_system,
-            test.master.target_component,
-            mtype,
+            test.master.target_system, test.master.target_component, mtype
         )
     except TypeError:
         test.master.mav.mission_request_list_send(
-            test.master.target_system,
-            test.master.target_component,
+            test.master.target_system, test.master.target_component
         )
 
     count = None
@@ -109,7 +108,6 @@ def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
         if msg is not None and msg.get_type() == "MISSION_COUNT":
             count = int(msg.count)
             break
-
     if count is None:
         raise FlightTestError("FC did not return MISSION_COUNT")
     if count == 0:
@@ -119,16 +117,11 @@ def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
     for seq in range(count):
         try:
             test.master.mav.mission_request_int_send(
-                test.master.target_system,
-                test.master.target_component,
-                seq,
-                mtype,
+                test.master.target_system, test.master.target_component, seq, mtype
             )
         except TypeError:
             test.master.mav.mission_request_int_send(
-                test.master.target_system,
-                test.master.target_component,
-                seq,
+                test.master.target_system, test.master.target_component, seq
             )
 
         item = None
@@ -142,14 +135,12 @@ def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
                 continue
             if int(getattr(msg, "seq", -1)) != seq:
                 continue
-
             if t == "MISSION_ITEM_INT":
                 lat = float(msg.x) / 1e7
                 lon = float(msg.y) / 1e7
             else:
                 lat = float(msg.x)
                 lon = float(msg.y)
-
             item = {
                 "seq": seq,
                 "command": int(msg.command),
@@ -157,21 +148,18 @@ def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
                 "lat": lat,
                 "lon": lon,
                 "alt_m": float(msg.z),
-                "is_home": seq == 0,
             }
             break
-
         if item is None:
             raise FlightTestError(f"FC mission item seq={seq} download timeout")
         items.append(item)
-
     return items
 
 
 def print_json_table(strategy: str, entries: dict):
     print("\nCURRENT JSON")
     print(f"Strategy : {strategy}")
-    print("WP     STATUS    LATITUDE       LONGITUDE       AGL DESIRED")
+    print("WP     STATUS    LATITUDE       LONGITUDE       DESIRED AGL")
     print("--------------------------------------------------------------------")
 
     def wp_number(name: str):
@@ -198,20 +186,24 @@ def print_fc_table(items: list[dict]):
         print("Mission count : 0 (EMPTY)")
         return
 
-    real_count = max(0, len(items) - 1)
-    print(f"Raw FC count  : {len(items)} (includes HOME seq=0)")
-    print(f"Real mission  : {real_count} item(s)")
-    print("NOTE: HOME altitude is AMSL; it is NOT the WP1 flight height.")
+    print(f"Raw FC count  : {len(items)}")
+    print("Expected layout: seq0 HOME -> seq1 TAKEOFF -> seq2 WP1 -> seq3 WP2 ...")
+    print("NOTE: HOME altitude is AMSL. TAKEOFF/WP altitude is FC REL_HOME, not raw LiDAR AGL.")
     print("SEQ  ROLE     FRAME           COMMAND                LATITUDE       LONGITUDE       ALT")
     print("------------------------------------------------------------------------------------------------")
-
     for item in items:
-        name = command_name(item["command"])
-        role = "HOME" if item.get("is_home") else "MISSION"
+        seq = int(item["seq"])
+        cmd = int(item["command"])
+        if seq == FC_HOME_SEQ:
+            role = "HOME"
+        elif seq == FC_TAKEOFF_SEQ and cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            role = "TAKEOFF"
+        else:
+            role = "WP"
         print(
-            f"{item['seq']:<4} {role:<8} {frame_name(item['frame']):<15} "
-            f"{name:<22} {item['lat']:>11.7f}  {item['lon']:>12.7f}  "
-            f"{item['alt_m']:>6.2f}m"
+            f"{seq:<4} {role:<8} {frame_name(item['frame']):<15} "
+            f"{command_name(cmd):<22} {item['lat']:>11.7f}  "
+            f"{item['lon']:>12.7f}  {item['alt_m']:>6.2f}m"
         )
 
 
@@ -224,21 +216,29 @@ def compare(
 ) -> bool:
     print("\nCOMPARE JSON <-> FC")
     print(f"Expected route : {' -> '.join(f'{strategy}/WP{n}' for n in wp_numbers)}")
-    print("ArduPilot mapping: FC seq=0 HOME, first real waypoint starts at seq=1")
-    print("Strict MATCH uses LAT/LON only.")
-    print("JSON altitude = desired physical AGL; FC altitude may be runtime REL_HOME bridge.")
+    print("Mapping: seq0 HOME, seq1 TAKEOFF, first route waypoint at seq2.")
+    print("Strict route MATCH uses LAT/LON; JSON altitude is desired physical AGL.")
 
-    expected_raw_count = len(wp_numbers) + 1
+    expected_raw_count = len(wp_numbers) + 2
     if len(fc_items) != expected_raw_count:
         print(
-            f"[MISMATCH] FC raw mission count={len(fc_items)} "
-            f"expected={expected_raw_count} (HOME + {len(wp_numbers)} waypoint(s))"
+            f"[MISMATCH] FC raw mission count={len(fc_items)} expected={expected_raw_count} "
+            f"(HOME + TAKEOFF + {len(wp_numbers)} WP)"
+        )
+        return False
+    if int(fc_items[0].get("seq", -1)) != FC_HOME_SEQ:
+        print("[MISMATCH] FC HOME seq0 missing")
+        return False
+    if int(fc_items[FC_TAKEOFF_SEQ]["command"]) != mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+        print(
+            f"[MISMATCH] FC seq1 command={command_name(fc_items[1]['command'])}, expected NAV_TAKEOFF"
         )
         return False
 
-    if not fc_items or int(fc_items[0].get("seq", -1)) != 0:
-        print("[MISMATCH] FC HOME seq=0 missing")
-        return False
+    print(
+        f"[MATCH] TAKEOFF marker at FC seq1, FC_ALT={fc_items[1]['alt_m']:.2f}m "
+        f"frame={frame_name(fc_items[1]['frame'])}"
+    )
 
     all_match = True
     for route_index, wp_num in enumerate(wp_numbers):
@@ -249,47 +249,36 @@ def compare(
             all_match = False
             continue
 
-        fc_seq = route_index + 1
+        fc_seq = FC_FIRST_WP_SEQ + route_index
         fc = fc_items[fc_seq]
         if int(fc["command"]) != mavutil.mavlink.MAV_CMD_NAV_WAYPOINT:
             print(
-                f"[MISMATCH] {strategy}/{key} -> FC seq={fc_seq} command="
-                f"{command_name(fc['command'])}, expected MAV_CMD_NAV_WAYPOINT"
+                f"[MISMATCH] {strategy}/{key} -> FC seq={fc_seq} "
+                f"command={command_name(fc['command'])}, expected NAV_WAYPOINT"
             )
             all_match = False
             continue
 
         pos_err = distance_m(
-            float(item["lat"]),
-            float(item["lon"]),
-            fc["lat"],
-            fc["lon"],
+            float(item["lat"]), float(item["lon"]), fc["lat"], fc["lon"]
         )
         ok = pos_err <= float(position_tol_m)
         state = "MATCH" if ok else "MISMATCH"
-        json_agl = float(item.get("alt_m", 0.0))
         print(
             f"[{state}] {strategy}/{key} -> FC seq={fc_seq} "
-            f"position_error={pos_err:.3f}m | "
-            f"JSON_AGL={json_agl:.2f}m | FC_ALT={fc['alt_m']:.2f}m "
-            f"frame={frame_name(fc['frame'])}"
+            f"position_error={pos_err:.3f}m | JSON_AGL={float(item.get('alt_m', 0.0)):.2f}m "
+            f"| FC_ALT={fc['alt_m']:.2f}m frame={frame_name(fc['frame'])}"
         )
         all_match = all_match and ok
-
     return all_match
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Read-only Kingphoenix checker: JSON waypoint positions versus current FC mission"
+        description="Read-only checker for HOME -> TAKEOFF -> WP Kingphoenix mission layout"
     )
     ap.add_argument("--strategy", choices=["LEFT", "RIGHT"], default="LEFT")
-    ap.add_argument(
-        "--wp",
-        type=parse_wp_range,
-        default=None,
-        help="optional expected FC route, e.g. 1, 1-2, or 2-5",
-    )
+    ap.add_argument("--wp", type=parse_wp_range, default=None)
     ap.add_argument("--position-tol", type=float, default=0.30)
     args = ap.parse_args()
 
@@ -311,30 +300,22 @@ def main():
         test.open()
         fc_items = request_fc_mission(test)
         print_fc_table(fc_items)
-
         if args.wp is None:
             print("\nRESULT: JSON and FC snapshots displayed.")
-            print("For strict position comparison use, for example:")
+            print("For strict comparison use, for example:")
             print("  python3 tools/check_waypoints.py --strategy LEFT --wp 1-2")
             return 0
 
-        ok = compare(
-            entries,
-            args.strategy,
-            list(args.wp),
-            fc_items,
-            args.position_tol,
-        )
+        ok = compare(entries, args.strategy, list(args.wp), fc_items, args.position_tol)
         print(
             "\nRESULT: "
             + (
-                "MATCH - JSON positions and FC mission positions are consistent"
+                "MATCH - HOME/TAKEOFF layout and route positions are consistent"
                 if ok
-                else "MISMATCH - do not assume FC mission positions match JSON"
+                else "MISMATCH - do not fly AUTO until mission layout is corrected"
             )
         )
         return 0 if ok else 3
-
     except KeyboardInterrupt:
         print("\n[STOP] operator interrupted")
         return 130
