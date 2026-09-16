@@ -1,12 +1,33 @@
 {
-  "version": 1,
+  "version": 2,
   "commands": [
-    "SAVE_WAYPOINT",
-    "SET_STRATEGY",
+    "HELLO",
+    "HEARTBEAT",
+    "DISCONNECT",
+    "GET_PREFLIGHT_STATUS",
+    "SET_MP_DESTINATION",
+    "CLEAR_MP_DESTINATION",
+    "GET_MP_GATEWAY_STATUS",
+    "ARM",
+    "DISARM",
+    "SET_MODE",
     "UNLOCK_EDIT",
     "LOCK_EDIT",
+    "SAVE_WAYPOINT",
+    "SET_STRATEGY",
     "START_MISSION",
-    "ABORT_MISSION"
+    "ABORT_MISSION",
+    "SERVO_CONTROL"
   ],
-  "ack_required": true
+  "servo_actions": [
+    "OPEN",
+    "CLOSE",
+    "TEST"
+  ],
+  "ack_required": true,
+  "notes": {
+    "START_MISSION": "Accepted by Pi and published to mission event bus; mission execution backend is developed independently of the Windows GCS build.",
+    "ABORT_MISSION": "Accepted by Pi and published as GLOBAL_ABORT; physical abort/landing policy remains Pi-side authority.",
+    "SERVO_CONTROL": "Transport endpoint is stable. Pi currently ACKs accepted requests with executed=false/backend=PENDING until the mechanism driver is integrated."
+  }
 }
