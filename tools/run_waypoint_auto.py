@@ -11,6 +11,7 @@ from pymavlink import mavutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.flight_test_common import DirectFlightTest, FlightTestError, load_json
+from tools.check_waypoints import request_fc_mission
 
 
 def parse_wp_range(value: str) -> list[int]:
@@ -44,7 +45,7 @@ def load_global_waypoint(strategy: str, wp: int) -> dict:
     lat, lon = item.get("lat"), item.get("lon")
     if lat is None or lon is None:
         raise FlightTestError(
-            f"{strategy}/{key} has no lat/lon coordinate; capture it from main.py/GCS first"
+            f"{strategy}/{key} has no lat/lon coordinate; capture it from main.py first"
         )
 
     try:
@@ -137,6 +138,36 @@ def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_
     raise FlightTestError(f"mission upload timeout ({len(sent)}/{count})")
 
 
+def verify_uploaded_mission(test: DirectFlightTest, items: list[dict], position_tol_m=0.30, alt_tol_m=0.05):
+    print("[MISSION] downloading FC mission for readback verification ...")
+    fc_items = request_fc_mission(test)
+    if len(fc_items) != len(items):
+        raise FlightTestError(
+            f"FC mission readback count mismatch: FC={len(fc_items)} expected={len(items)}"
+        )
+
+    for seq, (expected, actual) in enumerate(zip(items, fc_items)):
+        if int(actual["command"]) != mavutil.mavlink.MAV_CMD_NAV_WAYPOINT:
+            raise FlightTestError(
+                f"FC mission seq={seq} command={actual['command']} is not NAV_WAYPOINT"
+            )
+        pos_err = distance_m(
+            expected["lat"], expected["lon"], actual["lat"], actual["lon"]
+        )
+        alt_err = abs(float(expected["alt_m"]) - float(actual["alt_m"]))
+        print(
+            f"[MISSION] verify seq={seq} {expected['label']} "
+            f"pos_err={pos_err:.3f}m alt_err={alt_err:.3f}m"
+        )
+        if pos_err > float(position_tol_m) or alt_err > float(alt_tol_m):
+            raise FlightTestError(
+                f"FC mission readback mismatch at seq={seq}: "
+                f"pos_err={pos_err:.3f}m alt_err={alt_err:.3f}m"
+            )
+
+    print("[MISSION] READBACK VERIFIED - FC mission matches requested JSON route")
+
+
 def run_auto(test: DirectFlightTest, labels: list[str], timeout=60.0):
     test.reached_seq = None
     try:
@@ -200,6 +231,7 @@ def main():
     print(f"[PLAN] nominal AUTO altitude={nominal_wp_alt:.2f}m")
     print(f"[PLAN] route={' -> '.join(labels)} -> LAND")
     print("[PLAN] waypoint source=GLOBAL lat/lon from config/waypoints.json")
+    print("[PLAN] safety=upload -> FC readback verify -> takeoff")
 
     saved = []
     try:
@@ -242,6 +274,7 @@ def main():
                 raise FlightTestError(f"{labels[0]} only {d:.2f}m away; single-WP test blocked")
 
         upload_auto_waypoints(test, mission_items, acceptance_radius_m=args.accept_radius)
+        verify_uploaded_mission(test, mission_items)
         test.takeoff_lidar_confirmed(args.alt, margin=args.margin, tolerance=args.tolerance, hold_s=args.hold, timeout=args.takeoff_timeout)
         print("[AUTO] LiDAR-confirmed takeoff complete; GUIDED -> AUTO")
         run_auto(test, labels, timeout=args.auto_timeout)
