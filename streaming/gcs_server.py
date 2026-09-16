@@ -24,6 +24,7 @@ class GcsServer(threading.Thread):
         "AUTO",
         "LAND",
     }
+    SERVO_ACTION_ALLOWLIST = {"OPEN", "CLOSE", "TEST"}
 
     def __init__(self, state, events, waypoints, stop_event, command_manager=None):
         super().__init__(name="GCSServer")
@@ -58,7 +59,7 @@ class GcsServer(threading.Thread):
             "active_ai_camera": self.state.vision.get(
                 "active_ai_camera", "front"
             ),
-            "version": "2.3.5",
+            "version": "2.3.7",
             "bench_control": self.command is not None,
             "live_preflight": True,
             "mission_planner_gateway": mp_status,
@@ -306,6 +307,7 @@ class GcsServer(threading.Thread):
         print("[GCS] V2.3 bench control: ARM/DISARM + DISARMED mode select")
         print("[GCS] V2.3.4 live PRE-FLIGHT request endpoint enabled")
         print("[GCS] V2.3.5 Mission Planner destination control enabled")
+        print("[GCS] V2.3.7 mission TX + servo request endpoint enabled")
 
         while not self.stop_event.is_set():
             try:
@@ -446,14 +448,58 @@ class GcsServer(threading.Thread):
             return ack(tx, True, "STRATEGY " + strategy)
 
         if kind == "START_MISSION":
+            strategy = self.state.mission.strategy
             self.events.publish(
                 "START_MISSION",
-                {"strategy": self.state.mission.strategy},
+                {"strategy": strategy},
             )
-            return ack(tx, True, "START REQUESTED")
+            return ack(
+                tx,
+                True,
+                "START REQUESTED",
+                data={
+                    "strategy": strategy,
+                    "accepted": True,
+                    "backend": "MISSION_EVENT_BUS",
+                },
+            )
 
         if kind == "ABORT_MISSION":
             self.events.publish("GLOBAL_ABORT", {"reason": "GCS_ABORT"})
-            return ack(tx, True, "ABORT REQUESTED")
+            return ack(
+                tx,
+                True,
+                "ABORT REQUESTED",
+                data={
+                    "accepted": True,
+                    "backend": "GLOBAL_ABORT_EVENT",
+                },
+            )
+
+        if kind == "SERVO_CONTROL":
+            action = str(msg.get("action") or "").upper().strip()
+            if action not in self.SERVO_ACTION_ALLOWLIST:
+                return ack(tx, False, f"SERVO ACTION REJECTED: {action or '--'}")
+
+            request = {
+                "action": action,
+                "source": "GCS",
+                "timestamp_ns": time.monotonic_ns(),
+            }
+            with self.state.lock:
+                self.state.system["servo_control_request"] = dict(request)
+            self.events.publish("SERVO_CONTROL_REQUEST", dict(request))
+            print(f"[GCS-SERVO] RX action={action} | actuator backend PENDING")
+            return ack(
+                tx,
+                True,
+                f"SERVO {action} RECEIVED - BACKEND PENDING",
+                data={
+                    "action": action,
+                    "accepted": True,
+                    "executed": False,
+                    "backend": "PENDING",
+                },
+            )
 
         return ack(tx, False, "Unknown command " + kind)
