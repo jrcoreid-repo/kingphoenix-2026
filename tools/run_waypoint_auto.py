@@ -12,6 +12,7 @@ from pymavlink import mavutil
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.flight_test_common import DirectFlightTest, FlightTestError, load_json
 from tools.check_waypoints import request_fc_mission
+from tools.run_takeoff_lidar_test import lidar_authoritative_takeoff
 
 
 def parse_wp_range(value: str) -> list[int]:
@@ -210,28 +211,37 @@ def main():
     defaults = load_json("flight_defaults.json")
     nominal_wp_alt = float(defaults.get("nominal_waypoint_alt_m", 1.2))
 
-    ap = argparse.ArgumentParser(description="Kingphoenix DEV takeoff -> AUTO WP range -> LAND")
+    ap = argparse.ArgumentParser(description="Kingphoenix DEV LiDAR takeoff -> AUTO WP range -> LAND")
     ap.add_argument("--strategy", choices=["LEFT", "RIGHT"], default="LEFT")
     ap.add_argument("--wp", type=parse_wp_range, default=parse_wp_range("1"), help="1, 1-2, 2-5, etc")
-    ap.add_argument("--alt", type=float, default=1.2, help="takeoff target only; AUTO WP altitude comes from DEV waypoint/default config")
-    ap.add_argument("--margin", type=float, default=0.15, help="takeoff command compensation, default +15%%")
+    ap.add_argument("--alt", type=float, default=1.2, help="raw LiDAR takeoff AGL target; AUTO WP altitude comes from waypoint config")
     ap.add_argument("--tolerance", type=float, default=0.05)
-    ap.add_argument("--hold", type=float, default=0.50)
-    ap.add_argument("--takeoff-timeout", type=float, default=12.0)
+    ap.add_argument("--handoff", type=float, default=0.25, help="LiDAR AGL for NAV_TAKEOFF -> velocity handoff")
+    ap.add_argument("--climb-rate", type=float, default=0.30, help="LiDAR-authoritative Guided climb rate after handoff")
+    ap.add_argument("--kick-alt", type=float, default=3.0, help="temporary NAV_TAKEOFF launch target only")
+    ap.add_argument("--hold", type=float, default=2.0, help="zero-velocity hold before AUTO handoff")
+    ap.add_argument("--ceiling", type=float, default=1.40, help="hard raw-LiDAR takeoff ceiling")
+    ap.add_argument("--takeoff-timeout", type=float, default=15.0)
     ap.add_argument("--auto-timeout", type=float, default=60.0)
     ap.add_argument("--accept-radius", type=float, default=0.5)
+    # Retained only so older field commands with '--margin 0' do not fail.
+    # It has no effect in the LiDAR-authoritative takeoff path.
+    ap.add_argument("--margin", type=float, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     wp_numbers = list(args.wp)
     labels = [f"{args.strategy}/WP{n}" for n in wp_numbers]
     print("=================================================")
-    print(" KINGPHOENIX DEV TAKEOFF -> AUTO -> LAND")
+    print(" KINGPHOENIX DEV LIDAR TAKEOFF -> AUTO -> LAND")
     print("=================================================")
-    print(f"[PLAN] takeoff target={args.alt:.2f}m")
+    print(f"[PLAN] raw-LiDAR takeoff target={args.alt:.2f}m")
+    print(f"[PLAN] takeoff handoff={args.handoff:.2f}m climb={args.climb_rate:.2f}m/s")
     print(f"[PLAN] nominal AUTO altitude={nominal_wp_alt:.2f}m")
     print(f"[PLAN] route={' -> '.join(labels)} -> LAND")
     print("[PLAN] waypoint source=GLOBAL lat/lon from config/waypoints.json")
-    print("[PLAN] safety=upload -> FC readback verify -> takeoff")
+    print("[PLAN] safety=upload -> FC readback verify -> LiDAR takeoff -> AUTO")
+    if args.margin is not None:
+        print("[NOTE] --margin is ignored; takeoff completion is raw LiDAR-authoritative")
 
     saved = []
     try:
@@ -275,11 +285,26 @@ def main():
 
         upload_auto_waypoints(test, mission_items, acceptance_radius_m=args.accept_radius)
         verify_uploaded_mission(test, mission_items)
-        test.takeoff_lidar_confirmed(args.alt, margin=args.margin, tolerance=args.tolerance, hold_s=args.hold, timeout=args.takeoff_timeout)
-        print("[AUTO] LiDAR-confirmed takeoff complete; GUIDED -> AUTO")
+
+        # This is the exact takeoff controller validated in the dedicated
+        # LiDAR field test: NAV_TAKEOFF only gets airborne, raw downward LiDAR
+        # hands off to Guided velocity and is the sole takeoff completion source.
+        lidar_authoritative_takeoff(
+            test,
+            args.alt,
+            tolerance_m=args.tolerance,
+            handoff_m=args.handoff,
+            climb_rate_mps=args.climb_rate,
+            kick_alt_m=args.kick_alt,
+            hold_s=args.hold,
+            timeout_s=args.takeoff_timeout,
+            ceiling_m=args.ceiling,
+        )
+        print("[AUTO] LiDAR-authoritative takeoff complete; GUIDED -> AUTO")
+
         run_auto(test, labels, timeout=args.auto_timeout)
         test.land_and_wait()
-        print("[RESULT] TAKEOFF -> AUTO -> LAND PASS")
+        print("[RESULT] LIDAR TAKEOFF -> AUTO -> LAND PASS")
         return 0
     except KeyboardInterrupt:
         test.land_best_effort("operator interrupted")
