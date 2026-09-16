@@ -74,13 +74,20 @@ def command_name(command: int) -> str:
         return str(int(command))
 
 
-def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
-    """Download the raw ArduPilot mission list.
+def frame_name(frame: int) -> str:
+    names = {
+        mavutil.mavlink.MAV_FRAME_GLOBAL: "GLOBAL/AMSL",
+        mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT: "REL_HOME",
+        mavutil.mavlink.MAV_FRAME_GLOBAL_INT: "GLOBAL_INT/AMSL",
+        mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT: "REL_HOME_INT",
+        getattr(mavutil.mavlink, "MAV_FRAME_GLOBAL_TERRAIN_ALT", 10): "TERRAIN",
+        getattr(mavutil.mavlink, "MAV_FRAME_GLOBAL_TERRAIN_ALT_INT", 11): "TERRAIN_INT",
+    }
+    return names.get(int(frame), str(int(frame)))
 
-    ArduPilot exposes HOME as mission sequence 0. Real uploaded mission items
-    therefore begin at sequence 1 on readback, even though the upload protocol
-    requested GCS item sequence 0 for the first real waypoint.
-    """
+
+def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
+    """Download raw ArduPilot mission list including virtual HOME seq=0."""
     mtype = mavutil.mavlink.MAV_MISSION_TYPE_MISSION
 
     try:
@@ -164,8 +171,8 @@ def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
 def print_json_table(strategy: str, entries: dict):
     print("\nCURRENT JSON")
     print(f"Strategy : {strategy}")
-    print("WP     STATUS    LATITUDE       LONGITUDE       ALT")
-    print("---------------------------------------------------------------")
+    print("WP     STATUS    LATITUDE       LONGITUDE       AGL DESIRED")
+    print("--------------------------------------------------------------------")
 
     def wp_number(name: str):
         try:
@@ -190,17 +197,21 @@ def print_fc_table(items: list[dict]):
     if not items:
         print("Mission count : 0 (EMPTY)")
         return
+
     real_count = max(0, len(items) - 1)
     print(f"Raw FC count  : {len(items)} (includes HOME seq=0)")
     print(f"Real mission  : {real_count} item(s)")
-    print("SEQ  ROLE   COMMAND                LATITUDE       LONGITUDE       ALT")
-    print("----------------------------------------------------------------------------")
+    print("NOTE: HOME altitude is AMSL; it is NOT the WP1 flight height.")
+    print("SEQ  ROLE     FRAME           COMMAND                LATITUDE       LONGITUDE       ALT")
+    print("------------------------------------------------------------------------------------------------")
+
     for item in items:
         name = command_name(item["command"])
         role = "HOME" if item.get("is_home") else "MISSION"
         print(
-            f"{item['seq']:<4} {role:<6} {name:<22} {item['lat']:>11.7f}  "
-            f"{item['lon']:>12.7f}  {item['alt_m']:>5.2f}m"
+            f"{item['seq']:<4} {role:<8} {frame_name(item['frame']):<15} "
+            f"{name:<22} {item['lat']:>11.7f}  {item['lon']:>12.7f}  "
+            f"{item['alt_m']:>6.2f}m"
         )
 
 
@@ -210,11 +221,12 @@ def compare(
     wp_numbers: list[int],
     fc_items: list[dict],
     position_tol_m: float,
-    alt_tol_m: float,
 ) -> bool:
     print("\nCOMPARE JSON <-> FC")
     print(f"Expected route : {' -> '.join(f'{strategy}/WP{n}' for n in wp_numbers)}")
     print("ArduPilot mapping: FC seq=0 HOME, first real waypoint starts at seq=1")
+    print("Strict MATCH uses LAT/LON only.")
+    print("JSON altitude = desired physical AGL; FC altitude may be runtime REL_HOME bridge.")
 
     expected_raw_count = len(wp_numbers) + 1
     if len(fc_items) != expected_raw_count:
@@ -253,13 +265,14 @@ def compare(
             fc["lat"],
             fc["lon"],
         )
-        alt_json = float(item.get("alt_m", 0.0))
-        alt_err = abs(alt_json - float(fc["alt_m"]))
-        ok = pos_err <= float(position_tol_m) and alt_err <= float(alt_tol_m)
+        ok = pos_err <= float(position_tol_m)
         state = "MATCH" if ok else "MISMATCH"
+        json_agl = float(item.get("alt_m", 0.0))
         print(
             f"[{state}] {strategy}/{key} -> FC seq={fc_seq} "
-            f"position_error={pos_err:.3f}m alt_error={alt_err:.3f}m"
+            f"position_error={pos_err:.3f}m | "
+            f"JSON_AGL={json_agl:.2f}m | FC_ALT={fc['alt_m']:.2f}m "
+            f"frame={frame_name(fc['frame'])}"
         )
         all_match = all_match and ok
 
@@ -268,7 +281,7 @@ def compare(
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Read-only Kingphoenix checker: config/waypoints.json versus current mission stored in FC"
+        description="Read-only Kingphoenix checker: JSON waypoint positions versus current FC mission"
     )
     ap.add_argument("--strategy", choices=["LEFT", "RIGHT"], default="LEFT")
     ap.add_argument(
@@ -277,8 +290,7 @@ def main():
         default=None,
         help="optional expected FC route, e.g. 1, 1-2, or 2-5",
     )
-    ap.add_argument("--position-tol", type=float, default=0.30, help="MATCH tolerance in meters")
-    ap.add_argument("--alt-tol", type=float, default=0.05, help="MATCH altitude tolerance in meters")
+    ap.add_argument("--position-tol", type=float, default=0.30)
     args = ap.parse_args()
 
     print("============================================================")
@@ -302,7 +314,7 @@ def main():
 
         if args.wp is None:
             print("\nRESULT: JSON and FC snapshots displayed.")
-            print("For strict comparison use, for example:")
+            print("For strict position comparison use, for example:")
             print("  python3 tools/check_waypoints.py --strategy LEFT --wp 1-2")
             return 0
 
@@ -312,17 +324,17 @@ def main():
             list(args.wp),
             fc_items,
             args.position_tol,
-            args.alt_tol,
         )
         print(
             "\nRESULT: "
             + (
-                "MATCH - JSON and FC mission are consistent"
+                "MATCH - JSON positions and FC mission positions are consistent"
                 if ok
-                else "MISMATCH - do not assume FC mission matches JSON"
+                else "MISMATCH - do not assume FC mission positions match JSON"
             )
         )
         return 0 if ok else 3
+
     except KeyboardInterrupt:
         print("\n[STOP] operator interrupted")
         return 130
