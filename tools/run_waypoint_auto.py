@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -27,6 +28,50 @@ def parse_wp_range(value: str) -> list[int]:
         return list(range(start, end + 1))
     except Exception:
         raise argparse.ArgumentTypeError("--wp must be like 1, 1-2, or 2-5")
+
+
+def load_global_waypoint(strategy: str, wp: int) -> dict:
+    data = load_json("waypoints.json")
+    defaults = load_json("flight_defaults.json")
+    nominal_alt = float(defaults.get("nominal_waypoint_alt_m", 1.2))
+    strategy = str(strategy).upper()
+    key = f"WP{int(wp)}"
+
+    if strategy not in data or key not in data[strategy]:
+        raise FlightTestError(f"unknown waypoint {strategy}/{key}")
+
+    item = data[strategy][key]
+    lat, lon = item.get("lat"), item.get("lon")
+    if lat is None or lon is None:
+        raise FlightTestError(
+            f"{strategy}/{key} has no lat/lon coordinate; capture it from main.py/GCS first"
+        )
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        alt_m = float(item.get("alt_m", nominal_alt))
+    except Exception as exc:
+        raise FlightTestError(f"{strategy}/{key} contains non-numeric data: {exc}")
+
+    if not all(math.isfinite(v) for v in (lat, lon, alt_m)):
+        raise FlightTestError(f"{strategy}/{key} contains invalid numeric data")
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        raise FlightTestError(f"{strategy}/{key} lat/lon out of range")
+    if lat == 0.0 and lon == 0.0:
+        raise FlightTestError(f"{strategy}/{key} lat/lon is 0,0")
+
+    return {"lat": lat, "lon": lon, "alt_m": alt_m}
+
+
+def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371000.0
+    p1 = math.radians(float(lat1))
+    p2 = math.radians(float(lat2))
+    dp = math.radians(float(lat2) - float(lat1))
+    dl = math.radians(float(lon2) - float(lon1))
+    a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2
+    return 2.0 * r * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
 
 
 def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_radius_m=0.5, timeout=10.0):
@@ -80,7 +125,7 @@ def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_
                 except TypeError:
                     test.master.mav.mission_item_send(*args)
             sent.add(seq)
-            print(f"[MISSION] sent seq={seq} {item['label']} alt={alt_m:.2f}m")
+            print(f"[MISSION] sent seq={seq} {item['label']} lat={lat:.7f} lon={lon:.7f} alt={alt_m:.2f}m")
         elif t == "MISSION_ACK":
             ack_type = int(getattr(msg, "type", -1))
             if ack_type != mavutil.mavlink.MAV_MISSION_ACCEPTED:
@@ -154,11 +199,12 @@ def main():
     print(f"[PLAN] takeoff target={args.alt:.2f}m")
     print(f"[PLAN] nominal AUTO altitude={nominal_wp_alt:.2f}m")
     print(f"[PLAN] route={' -> '.join(labels)} -> LAND")
+    print("[PLAN] waypoint source=GLOBAL lat/lon from config/waypoints.json")
 
     saved = []
     try:
         for n in wp_numbers:
-            saved.append(DirectFlightTest.validate_waypoint(args.strategy, n))
+            saved.append(load_global_waypoint(args.strategy, n))
     except FlightTestError as exc:
         print(f"[BLOCKED] {exc}")
         print("[SAFE] no MAVLink command sent")
@@ -170,16 +216,28 @@ def main():
         test.collect_preflight(require_auto=True)
         print(f"[PREFLIGHT] PASS LiDAR={test.lidar:.2f}m GPSfix={test.gps_fix} sats={test.gps_sats}")
 
+        if test.global_pos is None:
+            raise FlightTestError("GLOBAL_POSITION_INT unavailable")
+        cur_lat, cur_lon, _ = test.global_pos
+
         mission_items = []
         for label, wp in zip(labels, saved):
-            lat, lon, distance_m = test.local_waypoint_to_global(wp)
-            if distance_m > 100.0:
-                raise FlightTestError(f"{label} is {distance_m:.1f}m away; test limit is 100m")
-            mission_items.append({"label": label, "lat": lat, "lon": lon, "alt_m": float(wp.get("alt_m", nominal_wp_alt))})
-            print(f"[WP] {label} distance={distance_m:.2f}m alt={mission_items[-1]['alt_m']:.2f}m")
+            horizontal_m = distance_m(cur_lat, cur_lon, wp["lat"], wp["lon"])
+            if horizontal_m > 100.0:
+                raise FlightTestError(f"{label} is {horizontal_m:.1f}m away; test limit is 100m")
+            mission_items.append({
+                "label": label,
+                "lat": float(wp["lat"]),
+                "lon": float(wp["lon"]),
+                "alt_m": float(wp.get("alt_m", nominal_wp_alt)),
+            })
+            print(
+                f"[WP] {label} lat={wp['lat']:.7f} lon={wp['lon']:.7f} "
+                f"distance={horizontal_m:.2f}m alt={mission_items[-1]['alt_m']:.2f}m"
+            )
 
         if len(mission_items) == 1:
-            _, _, d = test.local_waypoint_to_global(saved[0])
+            d = distance_m(cur_lat, cur_lon, saved[0]["lat"], saved[0]["lon"])
             if d < 0.30:
                 raise FlightTestError(f"{labels[0]} only {d:.2f}m away; single-WP test blocked")
 
