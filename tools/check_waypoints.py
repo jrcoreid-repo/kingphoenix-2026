@@ -75,6 +75,12 @@ def command_name(command: int) -> str:
 
 
 def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
+    """Download the raw ArduPilot mission list.
+
+    ArduPilot exposes HOME as mission sequence 0. Real uploaded mission items
+    therefore begin at sequence 1 on readback, even though the upload protocol
+    requested GCS item sequence 0 for the first real waypoint.
+    """
     mtype = mavutil.mavlink.MAV_MISSION_TYPE_MISSION
 
     try:
@@ -144,6 +150,7 @@ def request_fc_mission(test: DirectFlightTest, timeout=5.0) -> list[dict]:
                 "lat": lat,
                 "lon": lon,
                 "alt_m": float(msg.z),
+                "is_home": seq == 0,
             }
             break
 
@@ -159,6 +166,7 @@ def print_json_table(strategy: str, entries: dict):
     print(f"Strategy : {strategy}")
     print("WP     STATUS    LATITUDE       LONGITUDE       ALT")
     print("---------------------------------------------------------------")
+
     def wp_number(name: str):
         try:
             return int(str(name).upper().replace("WP", ""))
@@ -182,27 +190,46 @@ def print_fc_table(items: list[dict]):
     if not items:
         print("Mission count : 0 (EMPTY)")
         return
-    print(f"Mission count : {len(items)}")
-    print("SEQ  COMMAND                LATITUDE       LONGITUDE       ALT")
-    print("---------------------------------------------------------------------")
+    real_count = max(0, len(items) - 1)
+    print(f"Raw FC count  : {len(items)} (includes HOME seq=0)")
+    print(f"Real mission  : {real_count} item(s)")
+    print("SEQ  ROLE   COMMAND                LATITUDE       LONGITUDE       ALT")
+    print("----------------------------------------------------------------------------")
     for item in items:
         name = command_name(item["command"])
+        role = "HOME" if item.get("is_home") else "MISSION"
         print(
-            f"{item['seq']:<4} {name:<22} {item['lat']:>11.7f}  "
+            f"{item['seq']:<4} {role:<6} {name:<22} {item['lat']:>11.7f}  "
             f"{item['lon']:>12.7f}  {item['alt_m']:>5.2f}m"
         )
 
 
-def compare(entries: dict, strategy: str, wp_numbers: list[int], fc_items: list[dict], position_tol_m: float, alt_tol_m: float) -> bool:
+def compare(
+    entries: dict,
+    strategy: str,
+    wp_numbers: list[int],
+    fc_items: list[dict],
+    position_tol_m: float,
+    alt_tol_m: float,
+) -> bool:
     print("\nCOMPARE JSON <-> FC")
     print(f"Expected route : {' -> '.join(f'{strategy}/WP{n}' for n in wp_numbers)}")
+    print("ArduPilot mapping: FC seq=0 HOME, first real waypoint starts at seq=1")
 
-    if len(fc_items) != len(wp_numbers):
-        print(f"[MISMATCH] FC mission count={len(fc_items)} expected={len(wp_numbers)}")
+    expected_raw_count = len(wp_numbers) + 1
+    if len(fc_items) != expected_raw_count:
+        print(
+            f"[MISMATCH] FC raw mission count={len(fc_items)} "
+            f"expected={expected_raw_count} (HOME + {len(wp_numbers)} waypoint(s))"
+        )
+        return False
+
+    if not fc_items or int(fc_items[0].get("seq", -1)) != 0:
+        print("[MISMATCH] FC HOME seq=0 missing")
         return False
 
     all_match = True
-    for seq, wp_num in enumerate(wp_numbers):
+    for route_index, wp_num in enumerate(wp_numbers):
         key = f"WP{wp_num}"
         item = entries.get(key)
         if not isinstance(item, dict) or not waypoint_saved(item):
@@ -210,10 +237,11 @@ def compare(entries: dict, strategy: str, wp_numbers: list[int], fc_items: list[
             all_match = False
             continue
 
-        fc = fc_items[seq]
+        fc_seq = route_index + 1
+        fc = fc_items[fc_seq]
         if int(fc["command"]) != mavutil.mavlink.MAV_CMD_NAV_WAYPOINT:
             print(
-                f"[MISMATCH] {strategy}/{key} -> FC seq={seq} command="
+                f"[MISMATCH] {strategy}/{key} -> FC seq={fc_seq} command="
                 f"{command_name(fc['command'])}, expected MAV_CMD_NAV_WAYPOINT"
             )
             all_match = False
@@ -230,7 +258,7 @@ def compare(entries: dict, strategy: str, wp_numbers: list[int], fc_items: list[
         ok = pos_err <= float(position_tol_m) and alt_err <= float(alt_tol_m)
         state = "MATCH" if ok else "MISMATCH"
         print(
-            f"[{state}] {strategy}/{key} -> FC seq={seq} "
+            f"[{state}] {strategy}/{key} -> FC seq={fc_seq} "
             f"position_error={pos_err:.3f}m alt_error={alt_err:.3f}m"
         )
         all_match = all_match and ok
@@ -286,7 +314,14 @@ def main():
             args.position_tol,
             args.alt_tol,
         )
-        print("\nRESULT: " + ("MATCH - JSON and FC mission are consistent" if ok else "MISMATCH - do not assume FC mission matches JSON"))
+        print(
+            "\nRESULT: "
+            + (
+                "MATCH - JSON and FC mission are consistent"
+                if ok
+                else "MISMATCH - do not assume FC mission matches JSON"
+            )
+        )
         return 0 if ok else 3
     except KeyboardInterrupt:
         print("\n[STOP] operator interrupted")
