@@ -134,8 +134,8 @@ def upload_two_wp_route(
                 seq,
                 mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
                 mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                0,  # current selected explicitly before each AUTO leg
-                1,  # autocontinue
+                0,
+                1,
                 0.0,
                 p2,
                 0.0,
@@ -222,12 +222,19 @@ def check_lidar_guard(
     floor_m: float,
     ceiling_m: float,
     outside_since: float | None,
+    lidar_loss_since: float | None,
     max_outside_s: float = 0.35,
-) -> float | None:
+    max_stale_s: float = 0.60,
+) -> tuple[float | None, float | None]:
     now = time.monotonic()
-    if not test.lidar_ok():
-        raise FlightTestError("LiDAR missing/stale during hybrid flight")
 
+    if not test.lidar_ok():
+        lidar_loss_since = lidar_loss_since or now
+        if now - lidar_loss_since > float(max_stale_s):
+            raise FlightTestError(f"LiDAR stale >{max_stale_s:.2f}s during hybrid flight")
+        return outside_since, lidar_loss_since
+
+    lidar_loss_since = None
     agl = float(test.lidar)
     if agl < float(floor_m) or agl > float(ceiling_m):
         outside_since = outside_since or now
@@ -237,7 +244,8 @@ def check_lidar_guard(
             )
     else:
         outside_since = None
-    return outside_since
+
+    return outside_since, lidar_loss_since
 
 
 def fly_auto_to_wp(
@@ -255,29 +263,33 @@ def fly_auto_to_wp(
     print(f"[AUTO] flying to {label} seq={seq}")
 
     outside_since = None
+    lidar_loss_since = None
     last_print = 0.0
     deadline = time.monotonic() + float(timeout)
     while time.monotonic() < deadline:
         test.poll(0.05)
         check_flight_health(test)
-        outside_since = check_lidar_guard(
+        outside_since, lidar_loss_since = check_lidar_guard(
             test,
             floor_m=floor_m,
             ceiling_m=ceiling_m,
             outside_since=outside_since,
+            lidar_loss_since=lidar_loss_since,
         )
 
         now = time.monotonic()
         if now - last_print >= 0.50:
             rel = None if test.global_pos is None else test.global_pos[2]
+            lidar_text = "--" if test.lidar is None else f"{test.lidar:.2f}"
             print(
                 f"[AUTO:{label}] current={test.mission_current} "
-                f"LiDAR={test.lidar:.2f}m relAlt={rel if rel is not None else float('nan'):.2f}m"
+                f"LiDAR={lidar_text}m relAlt={rel if rel is not None else float('nan'):.2f}m"
             )
             last_print = now
 
         if test.reached_seq == int(seq):
-            print(f"[AUTO] REACHED {label} seq={seq} | LiDAR={test.lidar:.2f}m")
+            lidar_text = "--" if test.lidar is None else f"{test.lidar:.2f}"
+            print(f"[AUTO] REACHED {label} seq={seq} | LiDAR={lidar_text}m")
             return
 
     raise FlightTestError(f"AUTO timeout before reaching {label}")
@@ -326,6 +338,7 @@ def guided_lateral_cruise(
 
     phases = (("RIGHT", abs(float(speed_mps))), ("LEFT", -abs(float(speed_mps))))
     outside_since = None
+    lidar_loss_since = None
 
     for phase_name, vy in phases:
         phase_end = time.monotonic() + float(duration_s)
@@ -336,26 +349,28 @@ def guided_lateral_cruise(
             now = time.monotonic()
             if now >= next_send:
                 send_body_velocity(test, vx_mps=0.0, vy_mps=vy, vz_mps=0.0)
-                next_send = now + 0.10  # 10Hz refresh
+                next_send = now + 0.10
 
             test.poll(0.05)
             check_flight_health(test)
             if test.mode != "GUIDED":
                 raise FlightTestError(f"mode changed during GUIDED cruise: {test.mode}")
 
-            outside_since = check_lidar_guard(
+            outside_since, lidar_loss_since = check_lidar_guard(
                 test,
                 floor_m=floor_m,
                 ceiling_m=ceiling_m,
                 outside_since=outside_since,
+                lidar_loss_since=lidar_loss_since,
             )
 
             now = time.monotonic()
             if now - last_print >= 0.25:
                 rel = None if test.global_pos is None else test.global_pos[2]
                 remaining = max(0.0, phase_end - now)
+                lidar_text = "--" if test.lidar is None else f"{test.lidar:.2f}"
                 print(
-                    f"[GUIDED:{phase_name}] vy={vy:+.2f}m/s LiDAR={test.lidar:.2f}m "
+                    f"[GUIDED:{phase_name}] vy={vy:+.2f}m/s LiDAR={lidar_text}m "
                     f"relAlt={rel if rel is not None else float('nan'):.2f}m remaining={remaining:.1f}s"
                 )
                 last_print = now
@@ -462,7 +477,6 @@ def main():
             print("[PRELOAD-ONLY] verified; vehicle remains DISARMED; exiting")
             return 0
 
-        # Proven physical launch controller, now with no deliberate hold.
         lidar_authoritative_takeoff(
             test,
             float(args.alt),
@@ -490,8 +504,6 @@ def main():
             timeout=float(args.wp_timeout),
         )
 
-        # Intercept the mission at WP1 and exercise the exact GUIDED body-velocity
-        # primitive that vision steering will later use.
         guided_lateral_cruise(
             test,
             speed_mps=float(args.cruise_speed),
