@@ -16,9 +16,7 @@ from tools.run_takeoff_lidar_test import lidar_authoritative_takeoff
 
 
 # ArduPilot exposes HOME as virtual FC mission seq=0 when reading a mission
-# back. Real uploaded mission items therefore appear as FC seq=1..N even
-# though the MAVLink upload transaction itself numbers the transmitted items
-# 0..N-1. Keep this offset explicit everywhere we compare/read mission state.
+# back. Real uploaded mission items therefore appear as FC seq=1..N.
 FC_HOME_SEQ_OFFSET = 1
 
 
@@ -59,18 +57,18 @@ def load_global_waypoint(strategy: str, wp: int) -> dict:
     try:
         lat = float(lat)
         lon = float(lon)
-        alt_m = float(item.get("alt_m", nominal_alt))
+        agl_m = float(item.get("alt_m", nominal_alt))
     except Exception as exc:
         raise FlightTestError(f"{strategy}/{key} contains non-numeric data: {exc}")
 
-    if not all(math.isfinite(v) for v in (lat, lon, alt_m)):
+    if not all(math.isfinite(v) for v in (lat, lon, agl_m)):
         raise FlightTestError(f"{strategy}/{key} contains invalid numeric data")
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
         raise FlightTestError(f"{strategy}/{key} lat/lon out of range")
     if lat == 0.0 and lon == 0.0:
         raise FlightTestError(f"{strategy}/{key} lat/lon is 0,0")
 
-    return {"lat": lat, "lon": lon, "alt_m": alt_m}
+    return {"lat": lat, "lon": lon, "agl_m": agl_m}
 
 
 def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -83,14 +81,13 @@ def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2.0 * r * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
 
 
-def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_radius_m=0.5, timeout=10.0):
-    """Upload mission using MISSION_ITEM_INT only.
-
-    MAVLink now deprecates float MISSION_ITEM for global coordinates. Even when
-    an autopilot sends legacy MISSION_REQUEST, reply with MISSION_ITEM_INT so
-    latitude/longitude retain 1e-7 degree precision instead of float32 losing
-    decimetres at longitude ~110 degrees.
-    """
+def upload_auto_waypoints(
+    test: DirectFlightTest,
+    items: list[dict],
+    acceptance_radius_m=0.5,
+    timeout=10.0,
+):
+    """Upload mission using MISSION_ITEM_INT only."""
     if not items:
         raise FlightTestError("AUTO mission is empty")
 
@@ -129,9 +126,6 @@ def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_
             lon = float(item["lon"])
             alt_m = float(item["alt_m"])
 
-            # Always answer with MISSION_ITEM_INT, including when ArduPilot
-            # emits deprecated MISSION_REQUEST. This is the modern mission
-            # protocol behaviour and prevents float32 global-coordinate loss.
             args = [
                 test.master.target_system,
                 test.master.target_component,
@@ -157,7 +151,7 @@ def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_
             request_label = "INT" if t == "MISSION_REQUEST_INT" else "LEGACY->INT"
             print(
                 f"[MISSION] sent INT seq={seq} {item['label']} "
-                f"lat={lat:.7f} lon={lon:.7f} alt={alt_m:.2f}m "
+                f"lat={lat:.7f} lon={lon:.7f} FCrelAlt={alt_m:.2f}m "
                 f"request={request_label}"
             )
 
@@ -169,13 +163,20 @@ def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_
                 raise FlightTestError(
                     f"mission ACK before all items sent ({len(sent)}/{count})"
                 )
-            print(f"[MISSION] {count} waypoint(s) uploaded as MISSION_ITEM_INT and ACKed")
+            print(
+                f"[MISSION] {count} waypoint(s) uploaded as MISSION_ITEM_INT and ACKed"
+            )
             return
 
     raise FlightTestError(f"mission upload timeout ({len(sent)}/{count})")
 
 
-def verify_uploaded_mission(test: DirectFlightTest, items: list[dict], position_tol_m=0.30, alt_tol_m=0.05):
+def verify_uploaded_mission(
+    test: DirectFlightTest,
+    items: list[dict],
+    position_tol_m=0.30,
+    alt_tol_m=0.05,
+):
     print("[MISSION] downloading FC mission for readback verification ...")
     fc_items = request_fc_mission(test)
 
@@ -214,10 +215,18 @@ def verify_uploaded_mission(test: DirectFlightTest, items: list[dict], position_
                 f"pos_err={pos_err:.3f}m alt_err={alt_err:.3f}m"
             )
 
-    print("[MISSION] READBACK VERIFIED - FC real mission items match requested JSON route")
+    print("[MISSION] READBACK VERIFIED - FC real mission items match requested route")
 
 
-def run_auto(test: DirectFlightTest, labels: list[str], timeout=60.0):
+def run_auto(
+    test: DirectFlightTest,
+    labels: list[str],
+    *,
+    desired_agl_m: float,
+    floor_m: float,
+    ceiling_m: float,
+    timeout=60.0,
+):
     test.reached_seq = None
     first_fc_seq = FC_HOME_SEQ_OFFSET
     final_fc_seq = len(labels) - 1 + FC_HOME_SEQ_OFFSET
@@ -236,15 +245,17 @@ def run_auto(test: DirectFlightTest, labels: list[str], timeout=60.0):
     time.sleep(0.15)
     test.set_mode("AUTO")
     print(
-        f"[AUTO] {' -> '.join(labels)} | "
-        f"FC real mission seq={first_fc_seq}..{final_fc_seq} (seq0 HOME)"
+        f"[AUTO] {' -> '.join(labels)} | FC seq={first_fc_seq}..{final_fc_seq} "
+        f"| LiDAR guard={floor_m:.2f}..{ceiling_m:.2f}m"
     )
 
     reached = set()
     lidar_loss_since = None
+    outside_since = None
     deadline = time.monotonic() + float(timeout)
+
     while time.monotonic() < deadline:
-        test.poll(0.15)
+        test.poll(0.10)
         now = time.monotonic()
 
         if not test.heartbeat_ok():
@@ -256,10 +267,20 @@ def run_auto(test: DirectFlightTest, labels: list[str], timeout=60.0):
 
         if test.lidar_ok():
             lidar_loss_since = None
+            agl = float(test.lidar)
+            if agl < float(floor_m) or agl > float(ceiling_m):
+                outside_since = outside_since or now
+                if now - outside_since > 0.35:
+                    raise FlightTestError(
+                        f"AUTO LiDAR AGL out of guard band: {agl:.2f}m "
+                        f"(desired={desired_agl_m:.2f}m, guard={floor_m:.2f}..{ceiling_m:.2f}m)"
+                    )
+            else:
+                outside_since = None
         else:
             lidar_loss_since = lidar_loss_since or now
-            if now - lidar_loss_since > 1.0:
-                raise FlightTestError("LiDAR stale >1.0s during low-altitude AUTO")
+            if now - lidar_loss_since > 0.60:
+                raise FlightTestError("LiDAR stale >0.60s during low-altitude AUTO")
 
         if test.reached_seq is not None:
             fc_seq = int(test.reached_seq)
@@ -269,8 +290,7 @@ def run_auto(test: DirectFlightTest, labels: list[str], timeout=60.0):
                 print(f"[AUTO] reached FC seq={fc_seq} {labels[route_index]}")
             if fc_seq == final_fc_seq:
                 print(
-                    f"[AUTO] final waypoint reached: FC seq={fc_seq} "
-                    f"{labels[-1]}"
+                    f"[AUTO] final waypoint reached: FC seq={fc_seq} {labels[-1]}"
                 )
                 return
 
@@ -279,10 +299,10 @@ def run_auto(test: DirectFlightTest, labels: list[str], timeout=60.0):
 
 def main():
     defaults = load_json("flight_defaults.json")
-    nominal_wp_alt = float(defaults.get("nominal_waypoint_alt_m", 1.2))
+    nominal_agl = float(defaults.get("nominal_waypoint_alt_m", 1.2))
 
     ap = argparse.ArgumentParser(
-        description="Kingphoenix DEV LiDAR takeoff -> AUTO WP range -> LAND"
+        description="Kingphoenix DEV LiDAR takeoff -> altitude-bridged AUTO WP -> LAND"
     )
     ap.add_argument("--strategy", choices=["LEFT", "RIGHT"], default="LEFT")
     ap.add_argument(
@@ -291,50 +311,25 @@ def main():
         default=parse_wp_range("1"),
         help="1, 1-2, 2-5, etc",
     )
-    ap.add_argument(
-        "--alt",
-        type=float,
-        default=1.2,
-        help="raw LiDAR takeoff AGL target; AUTO WP altitude comes from waypoint config",
-    )
+    ap.add_argument("--alt", type=float, default=1.2, help="raw LiDAR AGL target")
     ap.add_argument("--tolerance", type=float, default=0.05)
-    ap.add_argument(
-        "--handoff",
-        type=float,
-        default=0.25,
-        help="LiDAR AGL for NAV_TAKEOFF -> velocity handoff",
-    )
-    ap.add_argument(
-        "--climb-rate",
-        type=float,
-        default=0.30,
-        help="LiDAR-authoritative Guided climb rate after handoff",
-    )
-    ap.add_argument(
-        "--kick-alt",
-        type=float,
-        default=3.0,
-        help="temporary NAV_TAKEOFF launch target only",
-    )
-    ap.add_argument(
-        "--hold",
-        type=float,
-        default=2.0,
-        help="zero-velocity hold before AUTO handoff",
-    )
-    ap.add_argument(
-        "--ceiling",
-        type=float,
-        default=1.40,
-        help="hard raw-LiDAR takeoff ceiling",
-    )
+    ap.add_argument("--handoff", type=float, default=0.25)
+    ap.add_argument("--climb-rate", type=float, default=0.30)
+    ap.add_argument("--kick-alt", type=float, default=3.0)
+    ap.add_argument("--hold", type=float, default=2.0)
+    ap.add_argument("--ceiling", type=float, default=1.40, help="takeoff hard ceiling")
+    ap.add_argument("--auto-floor", type=float, default=0.65)
+    ap.add_argument("--auto-ceiling", type=float, default=1.55)
     ap.add_argument("--takeoff-timeout", type=float, default=15.0)
     ap.add_argument("--auto-timeout", type=float, default=60.0)
     ap.add_argument("--accept-radius", type=float, default=0.5)
-    # Retained only so older field commands with '--margin 0' do not fail.
-    # It has no effect in the LiDAR-authoritative takeoff path.
     ap.add_argument("--margin", type=float, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
+
+    if args.auto_floor >= args.alt:
+        raise SystemExit("--auto-floor must be below --alt")
+    if args.auto_ceiling <= args.alt:
+        raise SystemExit("--auto-ceiling must be above --alt")
 
     wp_numbers = list(args.wp)
     labels = [f"{args.strategy}/WP{n}" for n in wp_numbers]
@@ -342,21 +337,14 @@ def main():
     print("=================================================")
     print(" KINGPHOENIX DEV LIDAR TAKEOFF -> AUTO -> LAND")
     print("=================================================")
-    print(f"[PLAN] raw-LiDAR takeoff target={args.alt:.2f}m")
-    print(
-        f"[PLAN] takeoff handoff={args.handoff:.2f}m "
-        f"climb={args.climb_rate:.2f}m/s"
-    )
-    print(f"[PLAN] nominal AUTO altitude={nominal_wp_alt:.2f}m")
+    print(f"[PLAN] physical AGL target={args.alt:.2f}m from raw LiDAR")
+    print(f"[PLAN] JSON nominal AGL={nominal_agl:.2f}m")
     print(f"[PLAN] route={' -> '.join(labels)} -> LAND")
-    print("[PLAN] waypoint source=GLOBAL lat/lon from config/waypoints.json")
-    print("[PLAN] mission upload=MISSION_ITEM_INT only")
-    print("[PLAN] FC readback mapping=seq0 HOME, real mission starts seq1")
-    print("[PLAN] safety=upload -> FC readback verify -> LiDAR takeoff -> AUTO")
+    print("[PLAN] AUTO altitude is bridged from FC relative_alt after LiDAR hover")
+    print("[PLAN] mission upload happens AFTER takeoff; MISSION_ITEM_INT only")
+    print("[PLAN] FC seq0=HOME; real mission begins at seq1")
     if args.margin is not None:
-        print(
-            "[NOTE] --margin is ignored; takeoff completion is raw LiDAR-authoritative"
-        )
+        print("[NOTE] --margin ignored; takeoff completion is raw LiDAR-authoritative")
 
     saved = []
     try:
@@ -364,7 +352,6 @@ def main():
             saved.append(load_global_waypoint(args.strategy, n))
     except FlightTestError as exc:
         print(f"[BLOCKED] {exc}")
-        print("[SAFE] no MAVLink command sent")
         return 2
 
     test = DirectFlightTest()
@@ -380,52 +367,25 @@ def main():
             raise FlightTestError("GLOBAL_POSITION_INT unavailable")
         cur_lat, cur_lon, _ = test.global_pos
 
-        mission_items = []
         for label, wp in zip(labels, saved):
-            horizontal_m = distance_m(
-                cur_lat,
-                cur_lon,
-                wp["lat"],
-                wp["lon"],
-            )
+            horizontal_m = distance_m(cur_lat, cur_lon, wp["lat"], wp["lon"])
             if horizontal_m > 100.0:
                 raise FlightTestError(
                     f"{label} is {horizontal_m:.1f}m away; test limit is 100m"
                 )
-            mission_items.append(
-                {
-                    "label": label,
-                    "lat": float(wp["lat"]),
-                    "lon": float(wp["lon"]),
-                    "alt_m": float(wp.get("alt_m", nominal_wp_alt)),
-                }
-            )
             print(
                 f"[WP] {label} lat={wp['lat']:.7f} lon={wp['lon']:.7f} "
-                f"distance={horizontal_m:.2f}m "
-                f"alt={mission_items[-1]['alt_m']:.2f}m"
+                f"distance={horizontal_m:.2f}m desiredAGL={wp['agl_m']:.2f}m"
             )
 
-        if len(mission_items) == 1:
-            d = distance_m(
-                cur_lat,
-                cur_lon,
-                saved[0]["lat"],
-                saved[0]["lon"],
-            )
+        if len(saved) == 1:
+            d = distance_m(cur_lat, cur_lon, saved[0]["lat"], saved[0]["lon"])
             if d < 0.30:
                 raise FlightTestError(
                     f"{labels[0]} only {d:.2f}m away; single-WP test blocked"
                 )
 
-        upload_auto_waypoints(
-            test,
-            mission_items,
-            acceptance_radius_m=args.accept_radius,
-        )
-        verify_uploaded_mission(test, mission_items)
-
-        # Exact takeoff controller validated in the dedicated LiDAR field test.
+        # Phase 1: validated LiDAR-authoritative vertical launch.
         lidar_authoritative_takeoff(
             test,
             args.alt,
@@ -437,11 +397,69 @@ def main():
             timeout_s=args.takeoff_timeout,
             ceiling_m=args.ceiling,
         )
-        print("[AUTO] LiDAR-authoritative takeoff complete; GUIDED -> AUTO")
 
-        run_auto(test, labels, timeout=args.auto_timeout)
+        # Phase 2: bridge the FC's current altitude estimate into AUTO mission
+        # altitude so GUIDED->AUTO cannot command a large vertical step.
+        bridge_deadline = time.monotonic() + 1.0
+        while time.monotonic() < bridge_deadline:
+            test.poll(0.10)
+
+        if not test.lidar_ok():
+            raise FlightTestError("LiDAR invalid before AUTO altitude bridge")
+        if test.global_pos is None:
+            raise FlightTestError("GLOBAL_POSITION_INT unavailable after takeoff")
+
+        fc_rel_alt = float(test.global_pos[2])
+        if not math.isfinite(fc_rel_alt) or fc_rel_alt < -2.0 or fc_rel_alt > 10.0:
+            raise FlightTestError(
+                f"FC relative_alt unsafe after LiDAR hover: {fc_rel_alt:.2f}m; AUTO blocked"
+            )
+
+        print(
+            f"[ALT-BRIDGE] LiDAR AGL={test.lidar:.2f}m -> "
+            f"FC relative_alt={fc_rel_alt:.2f}m"
+        )
+        print(
+            "[ALT-BRIDGE] All AUTO WPs will use current FC relative_alt, "
+            "preventing vertical target step at GUIDED->AUTO"
+        )
+
+        mission_items = []
+        for label, wp in zip(labels, saved):
+            mission_items.append(
+                {
+                    "label": label,
+                    "lat": float(wp["lat"]),
+                    "lon": float(wp["lon"]),
+                    "alt_m": fc_rel_alt,
+                }
+            )
+
+        upload_auto_waypoints(
+            test,
+            mission_items,
+            acceptance_radius_m=args.accept_radius,
+        )
+        verify_uploaded_mission(test, mission_items)
+
+        if not test.lidar_ok():
+            raise FlightTestError("LiDAR invalid immediately before AUTO")
+        if not (args.auto_floor <= float(test.lidar) <= args.auto_ceiling):
+            raise FlightTestError(
+                f"LiDAR={test.lidar:.2f}m outside AUTO guard before mode switch"
+            )
+
+        print("[AUTO] Mission verified; switching GUIDED -> AUTO")
+        run_auto(
+            test,
+            labels,
+            desired_agl_m=args.alt,
+            floor_m=args.auto_floor,
+            ceiling_m=args.auto_ceiling,
+            timeout=args.auto_timeout,
+        )
         test.land_and_wait()
-        print("[RESULT] LIDAR TAKEOFF -> AUTO -> LAND PASS")
+        print("[RESULT] LIDAR TAKEOFF -> ALT-BRIDGED AUTO -> LAND PASS")
         return 0
 
     except KeyboardInterrupt:
