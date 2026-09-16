@@ -76,16 +76,31 @@ def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2.0 * r * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
 
 
-def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_radius_m=0.5, timeout=10.0):
+def upload_auto_waypoints(
+    test: DirectFlightTest,
+    items: list[dict],
+    acceptance_radius_m=0.5,
+    timeout=10.0,
+):
     if not items:
         raise FlightTestError("AUTO mission is empty")
+
     test.clear_mission()
     mtype = mavutil.mavlink.MAV_MISSION_TYPE_MISSION
     count = len(items)
     try:
-        test.master.mav.mission_count_send(test.master.target_system, test.master.target_component, count, mtype)
+        test.master.mav.mission_count_send(
+            test.master.target_system,
+            test.master.target_component,
+            count,
+            mtype,
+        )
     except TypeError:
-        test.master.mav.mission_count_send(test.master.target_system, test.master.target_component, count)
+        test.master.mav.mission_count_send(
+            test.master.target_system,
+            test.master.target_component,
+            count,
+        )
 
     sent = set()
     deadline = time.monotonic() + float(timeout)
@@ -98,16 +113,28 @@ def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_
             seq = int(msg.seq)
             if seq < 0 or seq >= count:
                 raise FlightTestError(f"FC requested invalid mission seq={seq}")
+
             item = items[seq]
-            lat, lon, alt_m = float(item["lat"]), float(item["lon"]), float(item["alt_m"])
+            lat = float(item["lat"])
+            lon = float(item["lon"])
+            alt_m = float(item["alt_m"])
+
             if t == "MISSION_REQUEST_INT":
                 args = [
-                    test.master.target_system, test.master.target_component, seq,
+                    test.master.target_system,
+                    test.master.target_component,
+                    seq,
                     mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
                     mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                    0, 1 if seq == 0 else 0,
-                    0.0, float(acceptance_radius_m), 0.0, float("nan"),
-                    int(round(lat * 1e7)), int(round(lon * 1e7)), alt_m,
+                    0,
+                    1 if seq == 0 else 0,
+                    0.0,
+                    float(acceptance_radius_m),
+                    0.0,
+                    float("nan"),
+                    int(round(lat * 1e7)),
+                    int(round(lon * 1e7)),
+                    alt_m,
                 ]
                 try:
                     test.master.mav.mission_item_int_send(*args, mtype)
@@ -115,95 +142,173 @@ def upload_auto_waypoints(test: DirectFlightTest, items: list[dict], acceptance_
                     test.master.mav.mission_item_int_send(*args)
             else:
                 args = [
-                    test.master.target_system, test.master.target_component, seq,
+                    test.master.target_system,
+                    test.master.target_component,
+                    seq,
                     mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
                     mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                    0, 1 if seq == 0 else 0,
-                    0.0, float(acceptance_radius_m), 0.0, float("nan"),
-                    lat, lon, alt_m,
+                    0,
+                    1 if seq == 0 else 0,
+                    0.0,
+                    float(acceptance_radius_m),
+                    0.0,
+                    float("nan"),
+                    lat,
+                    lon,
+                    alt_m,
                 ]
                 try:
                     test.master.mav.mission_item_send(*args, mtype)
                 except TypeError:
                     test.master.mav.mission_item_send(*args)
+
             sent.add(seq)
-            print(f"[MISSION] sent seq={seq} {item['label']} lat={lat:.7f} lon={lon:.7f} alt={alt_m:.2f}m")
+            print(
+                f"[MISSION] sent upload-seq={seq} {item['label']} "
+                f"lat={lat:.7f} lon={lon:.7f} alt={alt_m:.2f}m"
+            )
+
         elif t == "MISSION_ACK":
             ack_type = int(getattr(msg, "type", -1))
             if ack_type != mavutil.mavlink.MAV_MISSION_ACCEPTED:
                 raise FlightTestError(f"mission rejected ACK={ack_type}")
             if len(sent) != count:
-                raise FlightTestError(f"mission ACK before all items sent ({len(sent)}/{count})")
+                raise FlightTestError(
+                    f"mission ACK before all items sent ({len(sent)}/{count})"
+                )
             print(f"[MISSION] {count} waypoint(s) uploaded and ACKed")
+            print(
+                "[MISSION] ArduPilot stores HOME at FC seq=0; "
+                "uploaded WP1 will read back as FC seq=1"
+            )
             return
+
     raise FlightTestError(f"mission upload timeout ({len(sent)}/{count})")
 
 
-def verify_uploaded_mission(test: DirectFlightTest, items: list[dict], position_tol_m=0.30, alt_tol_m=0.05):
+def verify_uploaded_mission(
+    test: DirectFlightTest,
+    items: list[dict],
+    position_tol_m=0.30,
+    alt_tol_m=0.05,
+):
     print("[MISSION] downloading FC mission for readback verification ...")
     fc_items = request_fc_mission(test)
-    if len(fc_items) != len(items):
+
+    expected_raw_count = len(items) + 1  # HOME seq=0 + real mission items
+    if len(fc_items) != expected_raw_count:
         raise FlightTestError(
-            f"FC mission readback count mismatch: FC={len(fc_items)} expected={len(items)}"
+            f"FC mission readback count mismatch: FC={len(fc_items)} "
+            f"expected={expected_raw_count} (HOME + {len(items)} waypoint(s))"
         )
 
-    for seq, (expected, actual) in enumerate(zip(items, fc_items)):
+    if not fc_items or int(fc_items[0].get("seq", -1)) != 0:
+        raise FlightTestError("FC mission readback missing HOME seq=0")
+
+    home = fc_items[0]
+    print(
+        f"[MISSION] FC seq=0 HOME lat={home['lat']:.7f} "
+        f"lon={home['lon']:.7f} alt={home['alt_m']:.2f}m"
+    )
+
+    for route_index, expected in enumerate(items):
+        fc_seq = route_index + 1
+        actual = fc_items[fc_seq]
+
         if int(actual["command"]) != mavutil.mavlink.MAV_CMD_NAV_WAYPOINT:
             raise FlightTestError(
-                f"FC mission seq={seq} command={actual['command']} is not NAV_WAYPOINT"
+                f"FC mission seq={fc_seq} command={actual['command']} "
+                "is not NAV_WAYPOINT"
             )
+
         pos_err = distance_m(
-            expected["lat"], expected["lon"], actual["lat"], actual["lon"]
+            expected["lat"],
+            expected["lon"],
+            actual["lat"],
+            actual["lon"],
         )
         alt_err = abs(float(expected["alt_m"]) - float(actual["alt_m"]))
         print(
-            f"[MISSION] verify seq={seq} {expected['label']} "
+            f"[MISSION] verify FC seq={fc_seq} {expected['label']} "
             f"pos_err={pos_err:.3f}m alt_err={alt_err:.3f}m"
         )
+
         if pos_err > float(position_tol_m) or alt_err > float(alt_tol_m):
             raise FlightTestError(
-                f"FC mission readback mismatch at seq={seq}: "
+                f"FC mission readback mismatch at seq={fc_seq}: "
                 f"pos_err={pos_err:.3f}m alt_err={alt_err:.3f}m"
             )
 
-    print("[MISSION] READBACK VERIFIED - FC mission matches requested JSON route")
+    print("[MISSION] READBACK VERIFIED - HOME + requested JSON route are consistent")
 
 
 def run_auto(test: DirectFlightTest, labels: list[str], timeout=60.0):
     test.reached_seq = None
+
+    # ArduPilot reserves mission seq=0 for HOME. First real mission item is 1.
+    first_fc_seq = 1
+    final_fc_seq = len(labels)
+
     try:
-        test.master.mav.mission_set_current_send(test.master.target_system, test.master.target_component, 0)
+        test.master.mav.mission_set_current_send(
+            test.master.target_system,
+            test.master.target_component,
+            first_fc_seq,
+        )
     except Exception as exc:
-        raise FlightTestError(f"cannot select mission item 0: {exc}")
+        raise FlightTestError(
+            f"cannot select first real mission item seq={first_fc_seq}: {exc}"
+        )
+
     time.sleep(0.15)
     test.set_mode("AUTO")
-    print(f"[AUTO] {' -> '.join(labels)}")
+    print(
+        f"[AUTO] FC seq={first_fc_seq}..{final_fc_seq} | "
+        f"{' -> '.join(labels)}"
+    )
 
-    final_seq = len(labels) - 1
     reached = set()
     lidar_loss_since = None
     deadline = time.monotonic() + float(timeout)
+
     while time.monotonic() < deadline:
         test.poll(0.15)
         now = time.monotonic()
+
         if not test.heartbeat_ok():
             raise FlightTestError("heartbeat lost during AUTO")
         if test.gps_fix is not None and test.gps_fix < 3:
-            raise FlightTestError(f"GPS fix degraded during AUTO (fix={test.gps_fix})")
+            raise FlightTestError(
+                f"GPS fix degraded during AUTO (fix={test.gps_fix})"
+            )
+
         if test.lidar_ok():
             lidar_loss_since = None
         else:
             lidar_loss_since = lidar_loss_since or now
             if now - lidar_loss_since > 1.0:
-                raise FlightTestError("LiDAR stale >1.0s during low-altitude AUTO")
+                raise FlightTestError(
+                    "LiDAR stale >1.0s during low-altitude AUTO"
+                )
+
         if test.reached_seq is not None:
-            seq = int(test.reached_seq)
-            if 0 <= seq < len(labels) and seq not in reached:
-                reached.add(seq)
-                print(f"[AUTO] reached {labels[seq]}")
-            if seq == final_seq:
-                print(f"[AUTO] final waypoint reached: {labels[final_seq]}")
+            fc_seq = int(test.reached_seq)
+            if 1 <= fc_seq <= len(labels):
+                route_index = fc_seq - 1
+                if fc_seq not in reached:
+                    reached.add(fc_seq)
+                    print(
+                        f"[AUTO] reached FC seq={fc_seq} "
+                        f"{labels[route_index]}"
+                    )
+
+            if fc_seq == final_fc_seq:
+                print(
+                    f"[AUTO] final waypoint reached: "
+                    f"{labels[final_fc_seq - 1]} (FC seq={fc_seq})"
+                )
                 return
+
     raise FlightTestError("AUTO mission timeout")
 
 
@@ -211,16 +316,53 @@ def main():
     defaults = load_json("flight_defaults.json")
     nominal_wp_alt = float(defaults.get("nominal_waypoint_alt_m", 1.2))
 
-    ap = argparse.ArgumentParser(description="Kingphoenix DEV LiDAR takeoff -> AUTO WP range -> LAND")
+    ap = argparse.ArgumentParser(
+        description="Kingphoenix DEV LiDAR takeoff -> AUTO WP range -> LAND"
+    )
     ap.add_argument("--strategy", choices=["LEFT", "RIGHT"], default="LEFT")
-    ap.add_argument("--wp", type=parse_wp_range, default=parse_wp_range("1"), help="1, 1-2, 2-5, etc")
-    ap.add_argument("--alt", type=float, default=1.2, help="raw LiDAR takeoff AGL target; AUTO WP altitude comes from waypoint config")
+    ap.add_argument(
+        "--wp",
+        type=parse_wp_range,
+        default=parse_wp_range("1"),
+        help="1, 1-2, 2-5, etc",
+    )
+    ap.add_argument(
+        "--alt",
+        type=float,
+        default=1.2,
+        help="raw LiDAR takeoff AGL target; AUTO WP altitude comes from waypoint config",
+    )
     ap.add_argument("--tolerance", type=float, default=0.05)
-    ap.add_argument("--handoff", type=float, default=0.25, help="LiDAR AGL for NAV_TAKEOFF -> velocity handoff")
-    ap.add_argument("--climb-rate", type=float, default=0.30, help="LiDAR-authoritative Guided climb rate after handoff")
-    ap.add_argument("--kick-alt", type=float, default=3.0, help="temporary NAV_TAKEOFF launch target only")
-    ap.add_argument("--hold", type=float, default=2.0, help="zero-velocity hold before AUTO handoff")
-    ap.add_argument("--ceiling", type=float, default=1.40, help="hard raw-LiDAR takeoff ceiling")
+    ap.add_argument(
+        "--handoff",
+        type=float,
+        default=0.25,
+        help="LiDAR AGL for NAV_TAKEOFF -> velocity handoff",
+    )
+    ap.add_argument(
+        "--climb-rate",
+        type=float,
+        default=0.30,
+        help="LiDAR-authoritative Guided climb rate after handoff",
+    )
+    ap.add_argument(
+        "--kick-alt",
+        type=float,
+        default=3.0,
+        help="temporary NAV_TAKEOFF launch target only",
+    )
+    ap.add_argument(
+        "--hold",
+        type=float,
+        default=2.0,
+        help="zero-velocity hold before AUTO handoff",
+    )
+    ap.add_argument(
+        "--ceiling",
+        type=float,
+        default=1.40,
+        help="hard raw-LiDAR takeoff ceiling",
+    )
     ap.add_argument("--takeoff-timeout", type=float, default=15.0)
     ap.add_argument("--auto-timeout", type=float, default=60.0)
     ap.add_argument("--accept-radius", type=float, default=0.5)
@@ -231,17 +373,26 @@ def main():
 
     wp_numbers = list(args.wp)
     labels = [f"{args.strategy}/WP{n}" for n in wp_numbers]
+
     print("=================================================")
     print(" KINGPHOENIX DEV LIDAR TAKEOFF -> AUTO -> LAND")
     print("=================================================")
     print(f"[PLAN] raw-LiDAR takeoff target={args.alt:.2f}m")
-    print(f"[PLAN] takeoff handoff={args.handoff:.2f}m climb={args.climb_rate:.2f}m/s")
+    print(
+        f"[PLAN] takeoff handoff={args.handoff:.2f}m "
+        f"climb={args.climb_rate:.2f}m/s"
+    )
     print(f"[PLAN] nominal AUTO altitude={nominal_wp_alt:.2f}m")
     print(f"[PLAN] route={' -> '.join(labels)} -> LAND")
     print("[PLAN] waypoint source=GLOBAL lat/lon from config/waypoints.json")
     print("[PLAN] safety=upload -> FC readback verify -> LiDAR takeoff -> AUTO")
+    print("[PLAN] ArduPilot FC seq mapping: HOME=0, first real mission item=1")
+
     if args.margin is not None:
-        print("[NOTE] --margin is ignored; takeoff completion is raw LiDAR-authoritative")
+        print(
+            "[NOTE] --margin is ignored; takeoff completion is "
+            "raw LiDAR-authoritative"
+        )
 
     saved = []
     try:
@@ -256,7 +407,10 @@ def main():
     try:
         test.open()
         test.collect_preflight(require_auto=True)
-        print(f"[PREFLIGHT] PASS LiDAR={test.lidar:.2f}m GPSfix={test.gps_fix} sats={test.gps_sats}")
+        print(
+            f"[PREFLIGHT] PASS LiDAR={test.lidar:.2f}m "
+            f"GPSfix={test.gps_fix} sats={test.gps_sats}"
+        )
 
         if test.global_pos is None:
             raise FlightTestError("GLOBAL_POSITION_INT unavailable")
@@ -264,31 +418,51 @@ def main():
 
         mission_items = []
         for label, wp in zip(labels, saved):
-            horizontal_m = distance_m(cur_lat, cur_lon, wp["lat"], wp["lon"])
+            horizontal_m = distance_m(
+                cur_lat,
+                cur_lon,
+                wp["lat"],
+                wp["lon"],
+            )
             if horizontal_m > 100.0:
-                raise FlightTestError(f"{label} is {horizontal_m:.1f}m away; test limit is 100m")
-            mission_items.append({
-                "label": label,
-                "lat": float(wp["lat"]),
-                "lon": float(wp["lon"]),
-                "alt_m": float(wp.get("alt_m", nominal_wp_alt)),
-            })
+                raise FlightTestError(
+                    f"{label} is {horizontal_m:.1f}m away; test limit is 100m"
+                )
+
+            mission_items.append(
+                {
+                    "label": label,
+                    "lat": float(wp["lat"]),
+                    "lon": float(wp["lon"]),
+                    "alt_m": float(wp.get("alt_m", nominal_wp_alt)),
+                }
+            )
             print(
                 f"[WP] {label} lat={wp['lat']:.7f} lon={wp['lon']:.7f} "
-                f"distance={horizontal_m:.2f}m alt={mission_items[-1]['alt_m']:.2f}m"
+                f"distance={horizontal_m:.2f}m "
+                f"alt={mission_items[-1]['alt_m']:.2f}m"
             )
 
         if len(mission_items) == 1:
-            d = distance_m(cur_lat, cur_lon, saved[0]["lat"], saved[0]["lon"])
+            d = distance_m(
+                cur_lat,
+                cur_lon,
+                saved[0]["lat"],
+                saved[0]["lon"],
+            )
             if d < 0.30:
-                raise FlightTestError(f"{labels[0]} only {d:.2f}m away; single-WP test blocked")
+                raise FlightTestError(
+                    f"{labels[0]} only {d:.2f}m away; single-WP test blocked"
+                )
 
-        upload_auto_waypoints(test, mission_items, acceptance_radius_m=args.accept_radius)
+        upload_auto_waypoints(
+            test,
+            mission_items,
+            acceptance_radius_m=args.accept_radius,
+        )
         verify_uploaded_mission(test, mission_items)
 
-        # This is the exact takeoff controller validated in the dedicated
-        # LiDAR field test: NAV_TAKEOFF only gets airborne, raw downward LiDAR
-        # hands off to Guided velocity and is the sole takeoff completion source.
+        # Exact controller validated in the dedicated LiDAR takeoff field test.
         lidar_authoritative_takeoff(
             test,
             args.alt,
@@ -300,12 +474,15 @@ def main():
             timeout_s=args.takeoff_timeout,
             ceiling_m=args.ceiling,
         )
-        print("[AUTO] LiDAR-authoritative takeoff complete; GUIDED -> AUTO")
+        print(
+            "[AUTO] LiDAR-authoritative takeoff complete; GUIDED -> AUTO"
+        )
 
         run_auto(test, labels, timeout=args.auto_timeout)
         test.land_and_wait()
         print("[RESULT] LIDAR TAKEOFF -> AUTO -> LAND PASS")
         return 0
+
     except KeyboardInterrupt:
         test.land_best_effort("operator interrupted")
         return 130
