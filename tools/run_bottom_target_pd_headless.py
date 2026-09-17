@@ -82,6 +82,22 @@ def main() -> int:
     base.GcsServer = HeadlessLoopbackGcs
     base.wait_bottom_stream = wait_bottom_headless
 
+    # Filter the inactive axis BEFORE vector capping/slew. This makes the
+    # printed BODY VX/VY values match the actual axis being tuned.
+    original_vector_cap = base.vector_cap
+
+    def axis_filtered_vector_cap(x: float, y: float, cap: float):
+        xx = float(x)
+        yy = float(y)
+        if axis == "x":
+            yy = 0.0
+        elif axis == "y":
+            xx = 0.0
+        return original_vector_cap(xx, yy, cap)
+
+    base.vector_cap = axis_filtered_vector_cap
+
+    # Defense in depth: also force the inactive MAVLink component to zero.
     original_send = base.send_body_xy
 
     def axis_filtered_send(test, vx_mps: float, vy_mps: float):
