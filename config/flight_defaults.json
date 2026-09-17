@@ -1,5 +1,5 @@
 {
-  "nominal_waypoint_alt_m": 1.2,
+  "nominal_waypoint_alt_m": 1.7,
   "takeoff_min_alt_m": 0.5,
   "takeoff_max_alt_m": 3.0,
   "takeoff_verify_ratio": 0.8,
