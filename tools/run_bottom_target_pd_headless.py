@@ -7,9 +7,10 @@ verified. Use --axis x, --axis y, then --axis xy for staged field tuning.
 Field correction
 ----------------
 The first BODY-X flight test showed the original image-X -> BODY-X command sign
-was reversed in the actual aircraft response. This wrapper therefore applies a
-field correction of X_SIGN=-1 by default. BODY-Y remains unchanged until its
-own one-axis flight validation is completed.
+was reversed in the actual aircraft response, so X_SIGN=-1 by default.
+The dedicated BODY-Y flight test then showed the same for Y, so Y_SIGN=-1 by
+default as well. These signs are field-validated for the current bottom-camera
+mounting and aircraft response.
 
 No Windows GCS is required. Vision video/metadata are looped to localhost so
 the normal VisionStreamSession continues updating SharedState.
@@ -90,14 +91,14 @@ def main() -> int:
         type=int,
         choices=[-1, 1],
         default=-1,
-        help="BODY-X field sign correction; default -1 from first flight test",
+        help="BODY-X field sign correction; default -1 from flight validation",
     )
     own.add_argument(
         "--y-sign",
         type=int,
         choices=[-1, 1],
-        default=1,
-        help="BODY-Y sign correction; default +1 until one-axis Y flight validation",
+        default=-1,
+        help="BODY-Y field sign correction; default -1 from flight validation",
     )
     own.add_argument(
         "--auto-land",
@@ -196,8 +197,7 @@ def main() -> int:
         print("[ACTIVE] BODY Y only: right/left | BODY X forced ZERO")
     else:
         print("[ACTIVE] BODY X + BODY Y combined")
-    print("[X FIELD FIX] first flight showed X reversed -> default X sign is now inverted")
-    print("[Y] unchanged until dedicated Y flight validation")
+    print("[FIELD FIX] flight validation: X reversed and Y reversed -> defaults X=-1, Y=-1")
     print("[NOTE] default remains SHADOW ONLY; add --flight explicitly")
     if auto_land:
         print("[LANDING] AUTO LAND ENABLED by --auto-land")
