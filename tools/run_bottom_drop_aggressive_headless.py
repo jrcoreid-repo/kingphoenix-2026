@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Kingphoenix bottom-camera aggressive drop + dual-servo field runner.
+"""Kingphoenix bottom-camera quick-drop + dual-servo field runner.
 
 Flow:
   servo pretest OPEN -> READY(CLOSE) -> GO
-  LiDAR takeoff -> bottom-camera XY chase/brake/final
-  center lock -> DROP (servo 7+8 OPEN) -> XY ZERO -> RC manual takeover
+  LiDAR takeoff -> bottom-camera XY chase/brake
+  raw image X/Y enters acceptable drop box -> immediate DROP
+  servo 7+8 OPEN -> XY ZERO -> RC manual takeover
 
 Field-validated camera sign corrections:
   X_SIGN=-1
   Y_SIGN=-1
 
-Default horizontal gains/cap keep the current field-good conservative values.
-No automatic LAND is sent by this runner.
+Design intent:
+- RTK / mission navigation will bring the aircraft near the drop target.
+- Bottom vision only performs the final short XY correction.
+- Do not hunt for pixel-perfect center.
+- As soon as raw image X/Y error is small enough, release immediately.
+- No automatic LAND is sent by this runner.
 """
 
 from __future__ import annotations
@@ -39,7 +44,7 @@ class PilotTakeover(RuntimeError):
 
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Bottom aggressive XY alignment + dual-servo drop field runner"
+        description="Bottom quick XY correction + immediate dual-servo drop field runner"
     )
 
     ap.add_argument("--duration", type=float, default=30.0)
@@ -50,14 +55,35 @@ def parse_args():
     ap.add_argument("--kd-y", type=float, default=0.12)
     ap.add_argument("--xy-slew", type=float, default=1.5)
 
+    # Movement zones. Keep the field-good 0.40 m/s cap by default.
     ap.add_argument("--far-error", type=float, default=0.30)
-    ap.add_argument("--brake-error", type=float, default=0.10)
-    ap.add_argument("--drop-error", type=float, default=0.05)
+    ap.add_argument("--brake-error", type=float, default=0.12)
     ap.add_argument("--far-cap", type=float, default=0.40)
     ap.add_argument("--brake-cap", type=float, default=0.25)
     ap.add_argument("--final-cap", type=float, default=0.12)
-    ap.add_argument("--drop-command-speed", type=float, default=0.20)
-    ap.add_argument("--drop-frames", type=int, default=3)
+
+    # QUICK DROP gate. This is intentionally simple: raw ex/ey only.
+    # lock-frames still protects against a newly acquired / unstable detection.
+    ap.add_argument(
+        "--drop-error",
+        type=float,
+        default=0.10,
+        help="immediate drop when abs(raw ex) and abs(raw ey) are both <= this value",
+    )
+    ap.add_argument(
+        "--drop-frames",
+        type=int,
+        default=1,
+        help="consecutive in-box frames required after target lock; default 1 for sat-set release",
+    )
+    # Retained only so older field commands do not fail. It is no longer a
+    # release condition; speed is deliberately NOT part of QUICK DROP.
+    ap.add_argument(
+        "--drop-command-speed",
+        type=float,
+        default=0.20,
+        help="legacy compatibility only; ignored by QUICK DROP logic",
+    )
 
     ap.add_argument("--deadband-x", type=float, default=0.04)
     ap.add_argument("--deadband-y", type=float, default=0.04)
@@ -111,12 +137,10 @@ def validate(a):
         raise SystemExit("--xy-slew must be 0.2..12m/s^2")
     if not 0.05 < a.brake_error < a.far_error <= 1.0:
         raise SystemExit("require 0.05<brake-error<far-error<=1.0")
-    if not 0.01 <= a.drop_error < a.brake_error:
-        raise SystemExit("require 0.01<=drop-error<brake-error")
+    if not 0.01 <= a.drop_error <= 0.30:
+        raise SystemExit("--drop-error must be 0.01..0.30")
     if not 0.05 <= a.final_cap <= a.brake_cap <= a.far_cap <= 2.5:
         raise SystemExit("require final-cap<=brake-cap<=far-cap<=2.5")
-    if not 0.05 <= a.drop_command_speed <= 0.5:
-        raise SystemExit("--drop-command-speed must be 0.05..0.5")
     if not 1 <= a.drop_frames <= 20:
         raise SystemExit("--drop-frames must be 1..20")
     if not 0.25 <= a.confidence <= 0.95:
@@ -234,7 +258,7 @@ def main() -> int:
     drop_complete = False
 
     print("============================================================")
-    print(" KINGPHOENIX BOTTOM AGGRESSIVE DROP - HEADLESS")
+    print(" KINGPHOENIX BOTTOM QUICK DROP - HEADLESS")
     print("============================================================")
     print(f"[FIELD SIGN] X={a.x_sign:+d} | Y={a.y_sign:+d}")
     print(
@@ -247,8 +271,8 @@ def main() -> int:
         f"FINAL cap={a.final_cap:.2f}"
     )
     print(
-        f"[DROP] |ex|,|ey|<={a.drop_error:.2f} for {a.drop_frames} frames "
-        f"and command speed<={a.drop_command_speed:.2f}m/s"
+        f"[QUICK DROP] RAW |ex|,|ey|<={a.drop_error:.2f} for {a.drop_frames} frame(s) "
+        f"after lock={a.lock_frames}; NO command-speed gate"
     )
     print(
         f"[SERVO] CH{a.servo_a}+CH{a.servo_b} "
@@ -352,7 +376,9 @@ def main() -> int:
             latest_conf, latest_ex, latest_ey = conf, ex, ey
             frame_id = b.get("frame_id")
             ts_ns = int(b.get("frame_timestamp_ns") or 0)
-            age = float("inf") if ts_ns <= 0 else max(0.0, (time.monotonic_ns() - ts_ns) / 1e9)
+            age = float("inf") if ts_ns <= 0 else max(
+                0.0, (time.monotonic_ns() - ts_ns) / 1e9
+            )
             valid = bool(
                 b.get("vision_valid")
                 and conf is not None
@@ -396,6 +422,38 @@ def main() -> int:
                 prev_ebx, prev_eby, prev_t = ebx, eby, now
 
                 if valid_streak >= int(a.lock_frames):
+                    # QUICK DROP comes BEFORE another PD correction. Once the
+                    # raw bbox center is good enough, do not hunt for a more
+                    # perfect center and do not wait for commanded speed.
+                    in_drop_box = (
+                        abs(float(ex)) <= float(a.drop_error)
+                        and abs(float(ey)) <= float(a.drop_error)
+                    )
+                    if in_drop_box:
+                        drop_streak += 1
+                    else:
+                        drop_streak = 0
+
+                    if drop_streak >= int(a.drop_frames):
+                        phase = "QUICK DROP"
+                        print(
+                            f"[QUICK DROP COMMIT] raw EX={float(ex):+.3f} "
+                            f"EY={float(ey):+.3f} | conf={float(conf):.2f} | "
+                            f"frames={drop_streak}/{a.drop_frames}"
+                        )
+                        base.zero_xy(test)
+                        vx_cmd = vy_cmd = 0.0
+                        set_servo_pair(
+                            test,
+                            a.servo_a,
+                            a.servo_b,
+                            a.open_pwm,
+                            "DROP OPEN",
+                            a.servo_settle,
+                        )
+                        drop_complete = True
+                        break
+
                     radial = math.hypot(float(filt_bx), float(filt_by))
                     if radial > float(a.far_error):
                         cap = float(a.far_cap)
@@ -410,35 +468,11 @@ def main() -> int:
                     target_vx = float(a.kp_x) * ebx + float(a.kd_x) * dfx
                     target_vy = float(a.kp_y) * eby + float(a.kd_y) * dfy
                     target_vx, target_vy = base.vector_cap(target_vx, target_vy, cap)
-
                     vx_cmd = base.slew(vx_cmd, target_vx, float(a.xy_slew), period)
                     vy_cmd = base.slew(vy_cmd, target_vy, float(a.xy_slew), period)
-
-                    centered = (
-                        abs(float(filt_bx)) <= float(a.drop_error)
-                        and abs(float(filt_by)) <= float(a.drop_error)
-                    )
-                    command_slow = math.hypot(vx_cmd, vy_cmd) <= float(a.drop_command_speed)
-                    if centered and command_slow:
-                        drop_streak += 1
-                    else:
-                        drop_streak = 0
-
-                    if drop_streak >= int(a.drop_frames):
-                        print(
-                            f"[DROP COMMIT] centered {drop_streak} frames | "
-                            f"EX={float(ex):+.3f} EY={float(ey):+.3f} | "
-                            f"cmd={math.hypot(vx_cmd, vy_cmd):.2f}m/s"
-                        )
-                        base.zero_xy(test)
-                        vx_cmd = vy_cmd = 0.0
-                        set_servo_pair(
-                            test, a.servo_a, a.servo_b, a.open_pwm, "DROP OPEN", a.servo_settle
-                        )
-                        drop_complete = True
-                        break
                 else:
                     phase = "LOCK"
+                    drop_streak = 0
                     vx_cmd = vy_cmd = 0.0
 
             elif not valid:
@@ -462,10 +496,18 @@ def main() -> int:
                 ex_t = "--" if latest_ex is None else f"{float(latest_ex):+.3f}"
                 ey_t = "--" if latest_ey is None else f"{float(latest_ey):+.3f}"
                 lidar_t = "--" if test.lidar is None else f"{float(test.lidar):.2f}"
+                drop_box = "--"
+                if latest_ex is not None and latest_ey is not None:
+                    drop_box = (
+                        "YES"
+                        if abs(float(latest_ex)) <= float(a.drop_error)
+                        and abs(float(latest_ey)) <= float(a.drop_error)
+                        else "NO"
+                    )
                 print(
                     f"[DROPXY] {phase:11s} conf={conf_t} ex={ex_t} ey={ey_t} | "
-                    f"VX={vx_cmd:+.2f} VY={vy_cmd:+.2f} "
-                    f"lock={valid_streak} drop={drop_streak}/{a.drop_frames} | "
+                    f"VX={vx_cmd:+.2f} VY={vy_cmd:+.2f} | "
+                    f"BOX={drop_box} lock={valid_streak} drop={drop_streak}/{a.drop_frames} | "
                     f"LiDAR={lidar_t}m"
                 )
                 last_print = now
@@ -474,12 +516,18 @@ def main() -> int:
 
         base.zero_xy(test)
         if drop_complete:
-            print("[RESULT] DROP COMPLETE -> XY ZERO -> RC TAKEOVER")
-            print(f"[SERVO STATE] CH{a.servo_a}/CH{a.servo_b} left OPEN at {a.open_pwm}us")
+            print("[RESULT] QUICK DROP COMPLETE -> XY ZERO -> RC TAKEOVER")
+            print(
+                f"[SERVO STATE] CH{a.servo_a}/CH{a.servo_b} "
+                f"left OPEN at {a.open_pwm}us"
+            )
         else:
             print("[RESULT] duration ended WITHOUT drop -> XY ZERO")
             if servo_prepared:
-                print(f"[SERVO STATE] CH{a.servo_a}/CH{a.servo_b} remains CLOSED at {a.close_pwm}us")
+                print(
+                    f"[SERVO STATE] CH{a.servo_a}/CH{a.servo_b} "
+                    f"remains CLOSED at {a.close_pwm}us"
+                )
             print("[RC TAKEOVER] AUTO LAND DISABLED; land manually")
         return 0
 
