@@ -10,11 +10,20 @@ Physical mount contract inherited from run_bottom_target_pd_tuning.py:
 
 No Windows GCS is required. Vision video/metadata are looped to localhost so
 the normal VisionStreamSession continues updating SharedState.
+
+Field landing policy
+--------------------
+For this headless wrapper AUTO LAND is DISABLED by default because the bottom
+camera may be looking at / flying above the payload container. At normal test
+completion, Ctrl+C, or a guarded abort, horizontal commands are zeroed and the
+operator lands manually with the RC. Pass --auto-land only when an automatic
+LAND command is explicitly desired.
 """
 
 from __future__ import annotations
 
 import argparse
+import builtins
 import sys
 import time
 from pathlib import Path
@@ -73,8 +82,14 @@ def wait_bottom_headless(state, timeout_s: float):
 def main() -> int:
     own = argparse.ArgumentParser(add_help=False)
     own.add_argument("--axis", choices=["x", "y", "xy"], default="xy")
+    own.add_argument(
+        "--auto-land",
+        action="store_true",
+        help="opt in to the base tuner's automatic LAND at test end/abort",
+    )
     own_args, remaining = own.parse_known_args(sys.argv[1:])
     axis = own_args.axis
+    auto_land = bool(own_args.auto_land)
 
     # Strip wrapper-only arguments before the base parser runs.
     sys.argv = [sys.argv[0], *remaining]
@@ -111,6 +126,44 @@ def main() -> int:
 
     base.send_body_xy = axis_filtered_send
 
+    if not auto_land:
+        # Keep the base tuner untouched, but suppress every software-initiated
+        # LAND path for this field wrapper. The runner sends XY ZERO and then
+        # leaves landing/mode takeover to the safety pilot on the RC.
+        def manual_land_and_wait(test):
+            try:
+                base.zero_xy(test)
+            except Exception:
+                pass
+            builtins.print("[MANUAL LAND] AUTO LAND suppressed; take over with RC and land manually")
+
+        def manual_land_best_effort(test, reason=""):
+            try:
+                base.zero_xy(test)
+            except Exception:
+                pass
+            suffix = f" | reason={reason}" if reason else ""
+            builtins.print(
+                "[MANUAL LAND] software LAND suppressed; take over with RC and land manually"
+                + suffix
+            )
+
+        base.DirectFlightTest.land_and_wait = manual_land_and_wait
+        base.DirectFlightTest.land_best_effort = manual_land_best_effort
+
+        # Rewrite the one base status line that otherwise says ZERO -> LAND,
+        # so the field terminal cannot imply that LAND will be commanded.
+        def base_print(*args, **kwargs):
+            if len(args) == 1 and args[0] == "[BOTTOM] duration complete -> ZERO -> LAND":
+                builtins.print(
+                    "[BOTTOM] duration complete -> ZERO; AUTO LAND DISABLED -> RC TAKEOVER",
+                    **kwargs,
+                )
+                return
+            builtins.print(*args, **kwargs)
+
+        base.print = base_print
+
     print("============================================================")
     print(" KINGPHOENIX BOTTOM PD - HEADLESS AXIS TUNER")
     print("============================================================")
@@ -124,6 +177,10 @@ def main() -> int:
     print("[MAP] image LEFT -> drone FORWARD | image RIGHT -> REARWARD")
     print("[MAP] image TOP -> drone RIGHT | image BOTTOM -> LEFT")
     print("[NOTE] default remains SHADOW ONLY; add --flight explicitly")
+    if auto_land:
+        print("[LANDING] AUTO LAND ENABLED by --auto-land")
+    else:
+        print("[LANDING] AUTO LAND DISABLED | test end/abort -> XY ZERO -> RC MANUAL LAND")
     print("------------------------------------------------------------")
 
     return base.main()
