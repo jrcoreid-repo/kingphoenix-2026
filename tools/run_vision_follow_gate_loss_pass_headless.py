@@ -20,6 +20,18 @@ from __future__ import annotations
 
 import runpy
 import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TARGET_SCRIPT = PROJECT_ROOT / "tools" / "run_vision_follow_gate_commit_headless.py"
+
+# When this file is launched as:
+#   python3 tools/run_vision_follow_gate_loss_pass_headless.py
+# Python puts tools/ (not the repository root) on sys.path. Add the project root
+# explicitly so imports such as `tools.*`, `core.*`, etc. are resolvable.
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 PRESET_ARGS = [
@@ -44,7 +56,7 @@ PRESET_ARGS = [
 def main() -> None:
     user_args = sys.argv[1:]
     sys.argv = [
-        "tools/run_vision_follow_gate_commit_headless.py",
+        str(TARGET_SCRIPT),
         *PRESET_ARGS,
         *user_args,
     ]
@@ -59,10 +71,9 @@ def main() -> None:
     print("[NOTE] CLI options supplied here override these preset values")
     print("------------------------------------------------------------")
 
-    runpy.run_module(
-        "tools.run_vision_follow_gate_commit_headless",
-        run_name="__main__",
-    )
+    # Use run_path rather than run_module. This works whether the tools/
+    # directory is a Python package or just a script directory on the Pi.
+    runpy.run_path(str(TARGET_SCRIPT), run_name="__main__")
 
 
 if __name__ == "__main__":
