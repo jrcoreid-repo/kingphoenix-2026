@@ -4,9 +4,12 @@
 Default remains SHADOW ONLY. Add --flight only after physical mapping is
 verified. Use --axis x, --axis y, then --axis xy for staged field tuning.
 
-Physical mount contract inherited from run_bottom_target_pd_tuning.py:
-  image X left->right  = drone FRONT->REAR  => BODY X error = -ex
-  image Y top->bottom  = drone RIGHT->LEFT  => BODY Y error = -ey
+Field correction
+----------------
+The first BODY-X flight test showed the original image-X -> BODY-X command sign
+was reversed in the actual aircraft response. This wrapper therefore applies a
+field correction of X_SIGN=-1 by default. BODY-Y remains unchanged until its
+own one-axis flight validation is completed.
 
 No Windows GCS is required. Vision video/metadata are looped to localhost so
 the normal VisionStreamSession continues updating SharedState.
@@ -83,12 +86,28 @@ def main() -> int:
     own = argparse.ArgumentParser(add_help=False)
     own.add_argument("--axis", choices=["x", "y", "xy"], default="xy")
     own.add_argument(
+        "--x-sign",
+        type=int,
+        choices=[-1, 1],
+        default=-1,
+        help="BODY-X field sign correction; default -1 from first flight test",
+    )
+    own.add_argument(
+        "--y-sign",
+        type=int,
+        choices=[-1, 1],
+        default=1,
+        help="BODY-Y sign correction; default +1 until one-axis Y flight validation",
+    )
+    own.add_argument(
         "--auto-land",
         action="store_true",
         help="opt in to the base tuner's automatic LAND at test end/abort",
     )
     own_args, remaining = own.parse_known_args(sys.argv[1:])
     axis = own_args.axis
+    x_sign = int(own_args.x_sign)
+    y_sign = int(own_args.y_sign)
     auto_land = bool(own_args.auto_land)
 
     # Strip wrapper-only arguments before the base parser runs.
@@ -97,13 +116,14 @@ def main() -> int:
     base.GcsServer = HeadlessLoopbackGcs
     base.wait_bottom_stream = wait_bottom_headless
 
-    # Filter the inactive axis BEFORE vector capping/slew. This makes the
-    # printed BODY VX/VY values match the actual axis being tuned.
+    # Apply field sign correction and filter inactive axes BEFORE vector
+    # capping/slew. This keeps printed BODY VX/VY consistent with transmitted
+    # MAVLink commands.
     original_vector_cap = base.vector_cap
 
     def axis_filtered_vector_cap(x: float, y: float, cap: float):
-        xx = float(x)
-        yy = float(y)
+        xx = float(x) * x_sign
+        yy = float(y) * y_sign
         if axis == "x":
             yy = 0.0
         elif axis == "y":
@@ -112,7 +132,8 @@ def main() -> int:
 
     base.vector_cap = axis_filtered_vector_cap
 
-    # Defense in depth: also force the inactive MAVLink component to zero.
+    # Defense in depth: force the inactive MAVLink component to zero. Sign has
+    # already been corrected upstream, so do not invert it again here.
     original_send = base.send_body_xy
 
     def axis_filtered_send(test, vx_mps: float, vy_mps: float):
@@ -168,14 +189,15 @@ def main() -> int:
     print(" KINGPHOENIX BOTTOM PD - HEADLESS AXIS TUNER")
     print("============================================================")
     print(f"[AXIS] {axis.upper()}")
+    print(f"[FIELD SIGN] X={x_sign:+d} | Y={y_sign:+d}")
     if axis == "x":
         print("[ACTIVE] BODY X only: forward/back | BODY Y forced ZERO")
     elif axis == "y":
         print("[ACTIVE] BODY Y only: right/left | BODY X forced ZERO")
     else:
         print("[ACTIVE] BODY X + BODY Y combined")
-    print("[MAP] image LEFT -> drone FORWARD | image RIGHT -> REARWARD")
-    print("[MAP] image TOP -> drone RIGHT | image BOTTOM -> LEFT")
+    print("[X FIELD FIX] first flight showed X reversed -> default X sign is now inverted")
+    print("[Y] unchanged until dedicated Y flight validation")
     print("[NOTE] default remains SHADOW ONLY; add --flight explicitly")
     if auto_land:
         print("[LANDING] AUTO LAND ENABLED by --auto-land")
