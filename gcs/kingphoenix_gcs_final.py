@@ -2435,7 +2435,7 @@ def create_gui():
 
                 add_value_row("Servo State", "LOCKED - ENTER SETUP MODE", "servo_state")
                 dpg.add_text(
-                    "Actuation is intentionally disabled in this layout build.",
+                    "Servo commands are enabled only in SETUP MODE.",
                     color=(170, 180, 190, 255),
                 )
 
