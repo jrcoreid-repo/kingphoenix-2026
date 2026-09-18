@@ -27,6 +27,8 @@ def main():
     assert full["servo"]["channels"] == [7, 8]
     assert int(full["servo"]["open_pwm"]) == 1100
     assert int(full["servo"]["close_pwm"]) == 2000
+    assert full["servo"]["require_closed_before_start"] is True
+    assert float(full["landing"]["timeout_s"]) >= 5.0
 
     mav = system["mavlink"]
     assert mav["transport"] == "MAVPROXY_UDP"
@@ -40,8 +42,10 @@ def main():
 
     for strategy in ("LEFT", "RIGHT"):
         assert strategy in waypoints
+        assert set(waypoints[strategy]) == {f"WP{n}" for n in range(1, 12)}
         for n in range(1, 12):
             assert f"WP{n}" in waypoints[strategy]
+            assert abs(float(waypoints[strategy][f"WP{n}"]["alt_m"]) - 1.0) < 1e-9
 
     print("[SELF-CHECK] full mission contract PASS")
     return 0
