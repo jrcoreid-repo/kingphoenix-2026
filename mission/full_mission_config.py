@@ -182,6 +182,13 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("mission_sync.compare_before_upload must remain true")
     if not bool(sync.get("verify_after_upload", True)):
         raise FullMissionConfigError("mission_sync.verify_after_upload must remain true")
+    if _finite(
+        "mission_sync.acceptance_radius_tolerance_m",
+        sync.get("acceptance_radius_tolerance_m", 0.05),
+    ) < 0.0:
+        raise FullMissionConfigError(
+            "mission_sync.acceptance_radius_tolerance_m must be >=0"
+        )
 
     logging = cfg.get("logging") or {}
     if _finite("logging.realtime_summary_interval_s", logging.get("realtime_summary_interval_s")) < 0.5:
