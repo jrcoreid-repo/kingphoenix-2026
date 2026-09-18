@@ -29,18 +29,29 @@ class MavlinkStreamConfigurator(threading.Thread):
             return None
 
     def request_all(self):
-        print("[MAVLINK:RATE] requesting telemetry intervals")
+        requested = 0
+        failed = []
+        unknown = []
         for name, rate in self.message_rates_hz.items():
             mid = self._message_id(name)
             if mid is None:
-                print(f"[MAVLINK:RATE] unknown message {name}, skipped")
+                unknown.append(str(name))
                 continue
             try:
                 ok = self.tx.set_message_interval(mid, float(rate))
-                print(f"[MAVLINK:RATE] {name:<20} target={float(rate):5.1f} Hz  "
-                      f"{'REQ' if ok else 'FAILED'}")
-            except Exception as e:
-                print(f"[MAVLINK:RATE] {name:<20} request failed: {e}")
+                if ok:
+                    requested += 1
+                else:
+                    failed.append(str(name))
+            except Exception:
+                failed.append(str(name))
+
+        detail = f"requested={requested}/{len(self.message_rates_hz)}"
+        if failed:
+            detail += " failed=" + ",".join(failed)
+        if unknown:
+            detail += " unknown=" + ",".join(unknown)
+        print(f"[MAVLINK:RATE] {detail}")
 
     def _below_target(self):
         v = self.state.vehicle
@@ -69,6 +80,5 @@ class MavlinkStreamConfigurator(threading.Thread):
             now = time.monotonic()
             if now - last >= self.retry_interval_s:
                 if self._below_target():
-                    print("[MAVLINK:RATE] stream below target -> re-request")
                     self.request_all()
                 last = now
