@@ -268,11 +268,16 @@ class MissionManager(threading.Thread):
                 deadline = time.monotonic() + land_timeout
                 while self.state.vehicle.armed and time.monotonic() < deadline:
                     if self.abort_event.is_set():
-                        break
+                        raise MissionRunError("ABORTED")
                     time.sleep(0.10)
 
+                if self.state.vehicle.armed:
+                    raise MissionRunError(
+                        f"LAND timeout after {land_timeout:.1f}s; vehicle still ARMED"
+                    )
+
                 self._set_status("COMPLETE")
-                print("[MISSION] COMPLETE")
+                print("[MISSION] COMPLETE | vehicle DISARMED")
 
         except (MissionRunError, MissionSyncError, LidarTakeoffError, FuzzyDropError) as exc:
             self._disable_ai("MISSION_ERROR")
