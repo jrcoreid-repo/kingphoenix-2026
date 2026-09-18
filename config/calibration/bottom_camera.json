@@ -1,26 +1,28 @@
 {
+  "schema": "kingphoenix.camera_calibration.v1",
   "camera_name": "bottom",
+  "camera": "bottom",
+  "valid": true,
+  "image_width": 1920,
+  "image_height": 1200,
+  "camera_matrix": [
+    [1156.368, 0.0, 963.025],
+    [0.0, 1156.764, 604.140],
+    [0.0, 0.0, 1.0]
+  ],
+  "dist_coeffs": [
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
   "intrinsics": {
-    "resolution": [
-      640,
-      640
-    ],
+    "resolution": [1920, 1200],
     "camera_matrix": [
-      [
-        null,
-        0.0,
-        null
-      ],
-      [
-        0.0,
-        null,
-        null
-      ],
-      [
-        0.0,
-        0.0,
-        1.0
-      ]
+      [1156.368, 0.0, 963.025],
+      [0.0, 1156.764, 604.140],
+      [0.0, 0.0, 1.0]
     ],
     "dist_coeffs": [
       null,
@@ -28,19 +30,24 @@
       null,
       null,
       null
-    ]
+    ],
+    "distortion_model": "opencv_plumb_bob"
+  },
+  "hfov_deg": 79.40,
+  "vfov_deg": 54.83,
+  "camera_to_body": {
+    "position_m": [0.0, 0.0, 0.0],
+    "rpy_deg": [0.0, 0.0, 0.0]
   },
   "extrinsics": {
-    "position_body_m": [
-      0,
-      0,
-      0
-    ],
-    "rotation_body_deg": [
-      0,
-      0,
-      0
-    ]
+    "position_body_m": [0.0, 0.0, 0.0],
+    "rotation_body_deg": [0.0, 0.0, 0.0]
   },
-  "valid": false
+  "calibration_quality": {
+    "rms_reprojection_error_px": 1.576
+  },
+  "runtime_contract": {
+    "resolution": [1920, 1200],
+    "note": "Use HFOV/VFOV geometry for bottom visual-to-LOCAL_NED metric projection."
+  }
 }
