@@ -23,6 +23,12 @@ def main():
 
     assert runtime.cfg["mavlink"]["connection"] == "udpin:127.0.0.1:14550"
     assert runtime.cfg["mission_planner_gateway"]["enabled"] is False
+    mission_conf = min(
+        float(runtime.full_cfg["vision"]["confidence_threshold"]),
+        float(runtime.full_cfg["guided_fuzzy"]["confidence_threshold"]),
+    )
+    assert abs(float(runtime.cfg["ai"]["detector"]["confidence_threshold"]) - mission_conf) < 1e-9
+    assert abs(float(runtime.cfg["vision_control"]["confidence_min"]) - mission_conf) < 1e-9
 
     assert runtime.full_cfg["mission"]["total_waypoints"] == 11
     assert runtime.full_cfg["mission"]["ai_enable_wp"] == 6
