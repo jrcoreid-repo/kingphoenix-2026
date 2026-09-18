@@ -156,7 +156,6 @@ def validate_full_mission_config(cfg: dict) -> None:
     guard_ceiling = _finite("guided_fuzzy.guard_ceiling_m", fuzzy.get("guard_ceiling_m"))
     if not 0.30 <= floor < guard_ceiling <= 3.0:
         raise FullMissionConfigError("invalid guided_fuzzy LiDAR guard")
-    fuzzy_timeout = _finite("guided_fuzzy.timeout_s", fuzzy.get("timeout_s", 20.0))
     fuzzy_hz = _finite("guided_fuzzy.control_hz", fuzzy.get("control_hz", 20.0))
     fuzzy_fresh = _finite(
         "guided_fuzzy.vision_freshness_s",
@@ -171,8 +170,6 @@ def validate_full_mission_config(cfg: dict) -> None:
         "guided_fuzzy.lidar_stale_s",
         fuzzy.get("lidar_stale_s", 0.60),
     )
-    if not 2.0 <= fuzzy_timeout <= 120.0:
-        raise FullMissionConfigError("guided_fuzzy.timeout_s must be 2..120")
     if not 10.0 <= fuzzy_hz <= 30.0:
         raise FullMissionConfigError("guided_fuzzy.control_hz must be 10..30Hz")
     if fuzzy_fresh <= 0.02:
@@ -225,6 +222,37 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("drop.servo_drop_state must remain OPEN")
     if bool(drop.get("auto_close_after_drop", False)):
         raise FullMissionConfigError("drop.auto_close_after_drop must remain false")
+    force_drop_s = _finite(
+        "drop.force_drop_after_fuzzy_s",
+        drop.get("force_drop_after_fuzzy_s", 8.0),
+    )
+    if not 1.0 <= force_drop_s <= 30.0:
+        raise FullMissionConfigError("drop.force_drop_after_fuzzy_s must be 1..30s")
+
+    setup_ai = cfg.get("setup_ai") or {}
+    if setup_ai.get("enabled", True) is not True:
+        raise FullMissionConfigError("setup_ai.enabled must remain true")
+    setup_interval = _finite(
+        "setup_ai.switch_interval_s",
+        setup_ai.get("switch_interval_s", 10.0),
+    )
+    if not 1.0 <= setup_interval <= 60.0:
+        raise FullMissionConfigError("setup_ai.switch_interval_s must be 1..60s")
+    if str(setup_ai.get("model_mode", "YOLO26_ONLY")).upper() != "YOLO26_ONLY":
+        raise FullMissionConfigError("setup_ai.model_mode must remain YOLO26_ONLY")
+    for camera_name, expected_task, expected_class in (
+        ("front", "GATE_NAV", 1),
+        ("bottom", "DROP_ALIGNMENT", 0),
+    ):
+        route = setup_ai.get(camera_name) or {}
+        if str(route.get("task", "")).upper() != expected_task:
+            raise FullMissionConfigError(
+                f"setup_ai.{camera_name}.task must be {expected_task}"
+            )
+        if int(route.get("detector_class_id", -1)) != expected_class:
+            raise FullMissionConfigError(
+                f"setup_ai.{camera_name}.detector_class_id must be {expected_class}"
+            )
 
     camera = cfg.get("camera") or {}
     required_camera_flags = (
