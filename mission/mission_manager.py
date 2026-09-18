@@ -276,6 +276,10 @@ class MissionManager(threading.Thread):
                 while self.state.vehicle.armed and time.monotonic() < deadline:
                     if self.abort_event.is_set():
                         raise MissionRunError("ABORTED")
+                    if str(self.state.vehicle.mode).upper() != "LAND":
+                        raise PilotTakeover(
+                            f"operator changed mode during LAND to {self.state.vehicle.mode}"
+                        )
                     time.sleep(0.10)
 
                 if self.state.vehicle.armed:
