@@ -53,6 +53,7 @@ class PiHealthMonitor:
         self.disk_fail_free_gb = float(cfg.get("disk_fail_free_gb", 0.5))
         self.disk_path = str(cfg.get("disk_path", "/"))
         self.vcgencmd_timeout_s = float(cfg.get("vcgencmd_timeout_s", 0.35))
+        self.wifi_interface = str(cfg.get("wifi_interface", "wlan1"))
 
     def _run_cmd(self, args):
         try:
@@ -174,6 +175,35 @@ class PiHealthMonitor:
         except Exception:
             return None
 
+    def _read_wifi(self):
+        """Read link state/RSSI without spawning network utilities."""
+        iface = self.wifi_interface
+        connected = False
+        rssi_dbm = None
+
+        try:
+            with open(f"/sys/class/net/{iface}/operstate", "r") as f:
+                connected = f.read().strip().lower() == "up"
+        except Exception:
+            connected = False
+
+        try:
+            with open("/proc/net/wireless", "r") as f:
+                for line in f:
+                    if ":" not in line:
+                        continue
+                    name, rest = line.split(":", 1)
+                    if name.strip() != iface:
+                        continue
+                    fields = rest.split()
+                    if len(fields) >= 3:
+                        rssi_dbm = float(fields[2].rstrip("."))
+                    break
+        except Exception:
+            rssi_dbm = None
+
+        return connected, rssi_dbm
+
     @staticmethod
     def _threshold_high(value, warn, fail):
         if value is None:
@@ -193,6 +223,7 @@ class PiHealthMonitor:
         ram_pct, ram_used_gb, ram_total_gb = self._read_ram()
         disk_used_pct, disk_free_gb, disk_total_gb = self._read_disk()
         uptime_s = self._read_uptime_s()
+        wifi_connected, wifi_rssi_dbm = self._read_wifi()
 
         thermal_status = self._threshold_high(
             temp_c, self.temp_warn_c, self.temp_fail_c
@@ -303,6 +334,9 @@ class PiHealthMonitor:
             "disk_free_gb": disk_free_gb,
             "disk_total_gb": disk_total_gb,
             "uptime_s": uptime_s,
+            "wifi_interface": self.wifi_interface,
+            "wifi_connected": bool(wifi_connected),
+            "wifi_rssi_dbm": wifi_rssi_dbm,
             "throttled_raw": throttled_raw,
             "throttled_hex": throttled_hex,
             **flags,
