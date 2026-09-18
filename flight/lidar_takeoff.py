@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+from safety.pilot_takeover import PilotTakeover
+
 
 class LidarTakeoffError(RuntimeError):
     pass
@@ -79,7 +81,7 @@ class ProfiledLidarTakeoff:
                 raise LidarTakeoffError("heartbeat lost during takeoff")
             if v.mode != "GUIDED":
                 self._zero()
-                raise LidarTakeoffError(f"mode changed during takeoff: {v.mode}")
+                raise PilotTakeover(f"operator changed mode during takeoff to {v.mode}")
 
             now = time.monotonic()
             if not v.rangefinder_is_fresh(stale_s):
