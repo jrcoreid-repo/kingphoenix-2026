@@ -141,6 +141,8 @@ class MissionManager(threading.Thread):
         return True
 
     def _preflight(self, strategy: str):
+        if bool(self.waypoints.edit_unlocked):
+            raise MissionRunError("START blocked: waypoint SETUP/EDIT mode is still unlocked")
         total = int(self.cfg["mission"]["total_waypoints"])
         ok, detail = self.waypoints.validate_strategy(strategy, total)
         if not ok:
