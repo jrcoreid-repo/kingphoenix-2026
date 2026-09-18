@@ -130,9 +130,11 @@ class KingphoenixRuntime:
             self.state, self.stop_event, self.full_cfg.get("logging", {})
         )
 
+        # MissionManager starts only after MAVLink, cameras, AI preload and
+        # servo startup state have had a bounded initialization window.
         self.workers = [
             self.rx, self.stream_config, self.safety, self.gcs, self.health,
-            self.vehicle_monitor, self.readiness, self.mission, self.runtime_logger,
+            self.vehicle_monitor, self.readiness, self.runtime_logger,
         ]
         if self.mp_gateway is not None:
             self.workers.insert(4, self.mp_gateway)
@@ -147,6 +149,8 @@ class KingphoenixRuntime:
         for worker in self.workers:
             worker.start()
 
+        # Both cameras start immediately and stay warm independently of GCS.
+        # AI is explicitly OFF until the WP6 drop-arming event.
         self.vision_stream.start()
         self.vision_stream.disable_ai(source="FULL_MISSION_STARTUP")
         with self.state.lock:
@@ -155,8 +159,21 @@ class KingphoenixRuntime:
         deadline = time.monotonic() + 5.0
         while not self.state.vehicle.connected and time.monotonic() < deadline:
             time.sleep(0.05)
+
+        vision_deadline = time.monotonic() + 3.0
+        while time.monotonic() < vision_deadline:
+            front = self.state.get_vision_snapshot("front")
+            bottom = self.state.get_vision_snapshot("bottom")
+            if bool(front.get("camera_open")) and bool(bottom.get("camera_open")):
+                break
+            time.sleep(0.05)
+
         ok, message = self.servo.initialize()
         print(("[SERVO] " if ok else "[WARN] ") + message)
+
+        self.mission.start()
+        with self.state.lock:
+            self.state.system["startup_state"] = "READY_FOR_OPERATOR"
 
     def wait(self):
         while not self.stop_event.is_set():
@@ -174,5 +191,7 @@ class KingphoenixRuntime:
         for worker in self.workers:
             if hasattr(worker, "join"):
                 worker.join(timeout=1.0)
+        if self.mission.is_alive():
+            self.mission.join(timeout=1.0)
         self.vision_stream.join(timeout=1.0)
         self.connection.close()
