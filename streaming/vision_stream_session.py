@@ -685,11 +685,42 @@ class VisionStreamSession:
         self.workers = [self.front, self.bottom]
 
     def start(self):
+        ai_health = {
+            "timestamp_ns": time.monotonic_ns(),
+            "status": "FAIL",
+            "device": "HAILO",
+            "hef": None,
+            "network_group": "INACTIVE",
+            "inference": "STANDBY",
+            "attempt": 1,
+            "last_error": None,
+            "detail": "AI engine disabled or unavailable",
+        }
+
         if self.shared_ai is not None:
+            ai_health["hef"] = str(getattr(self.shared_ai, "detector_hef_path", "--"))
             try:
                 self.shared_ai.open()
+                ai_health.update(
+                    timestamp_ns=time.monotonic_ns(),
+                    status="PASS",
+                    network_group="ACTIVE",
+                    inference="READY",
+                    detail="Hailo YOLO26 engine ready",
+                )
             except Exception as exc:
+                ai_health.update(
+                    timestamp_ns=time.monotonic_ns(),
+                    status="FAIL",
+                    network_group="INACTIVE",
+                    inference="DISABLED",
+                    last_error=repr(exc),
+                    detail=f"Hailo startup failed: {exc}",
+                )
                 print(f"[AI] shared Hailo DISABLED: {exc}")
+
+        with self.state.lock:
+            self.state.system["ai_health"] = ai_health
 
         for worker in self.workers:
             worker.start()
