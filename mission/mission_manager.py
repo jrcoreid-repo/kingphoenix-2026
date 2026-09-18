@@ -83,7 +83,7 @@ class MissionManager(threading.Thread):
         for strategy in ("LEFT", "RIGHT"):
             ok, detail = self.waypoints.validate_strategy(strategy, int(m["total_waypoints"]))
             print(f"[MISSION] {'PASS' if ok else 'WARN'} {strategy}: {detail}")
-        print("[READY] Waiting START L / START R | live preflight runs on START")
+        print("[STANDBY] Waiting START L / START R | live preflight gates every START")
 
     def _activate_drop_ai(self):
         if self.drop_done or self.drop_armed:
