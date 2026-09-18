@@ -43,6 +43,8 @@ class MissionManager(threading.Thread):
         self.drop_confirm = 0
         self.drop_last_frame = None
         self.drop_armed = False
+        self._setup_ai_stop = threading.Event()
+        self._setup_ai_thread = None
 
     @property
     def mission_active(self):
@@ -107,6 +109,67 @@ class MissionManager(threading.Thread):
             self.vision.disable_ai(source=source)
         except Exception as exc:
             print(f"[WARN] AI disable failed: {exc}")
+
+
+    def _setup_ai_loop(self):
+        cfg = dict(self.cfg.get("setup_ai") or {})
+        interval = max(0.5, float(cfg.get("switch_interval_s", 10.0)))
+        model_mode = str(cfg.get("model_mode", "YOLO26_ONLY"))
+        sequence = (
+            ("front", dict(cfg.get("front") or {})),
+            ("bottom", dict(cfg.get("bottom") or {})),
+        )
+        print(f"[SETUP-AI] ACTIVE | FRONT <-> BOTTOM every {interval:.1f}s")
+        index = 0
+        while not self._setup_ai_stop.is_set():
+            if not self.waypoints.edit_unlocked or self.mission_active:
+                break
+            camera, route_cfg = sequence[index % len(sequence)]
+            self.vision.set_ai_route(
+                camera,
+                model_mode=model_mode,
+                task=str(route_cfg.get("task", "--")),
+                detector_class_id=route_cfg.get("detector_class_id"),
+                source="SETUP_AI_TIMER",
+            )
+            print(
+                f"[SETUP-AI] {camera.upper()} | model={model_mode} | "
+                f"task={route_cfg.get('task', '--')} | "
+                f"class={route_cfg.get('detector_class_id')} | next={interval:.1f}s"
+            )
+            index += 1
+            if self._setup_ai_stop.wait(interval):
+                break
+        print("[SETUP-AI] SWITCHER STOPPED")
+
+    def _start_setup_ai(self):
+        cfg = dict(self.cfg.get("setup_ai") or {})
+        if not bool(cfg.get("enabled", True)):
+            return
+        if self.mission_active:
+            print("[WARN] SETUP AI ignored: mission active")
+            return
+        if self.state.vehicle.armed:
+            print("[WARN] SETUP AI ignored: vehicle ARMED")
+            return
+        if self._setup_ai_thread is not None and self._setup_ai_thread.is_alive():
+            return
+        self._setup_ai_stop.clear()
+        self._setup_ai_thread = threading.Thread(
+            target=self._setup_ai_loop,
+            name="SetupAiSwitcher",
+            daemon=True,
+        )
+        self._setup_ai_thread.start()
+
+    def _stop_setup_ai(self, source="SETUP_EXIT"):
+        self._setup_ai_stop.set()
+        thread = self._setup_ai_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=0.25)
+        self._setup_ai_thread = None
+        self._disable_ai(source)
+        print(f"[SETUP-AI] OFF | source={source}")
 
     def _drop_monitor_once(self):
         with self._drop_lock:
@@ -222,7 +285,7 @@ class MissionManager(threading.Thread):
                     self.drop_armed = False
 
                 self._set_status("PREFLIGHT", strategy=strategy, abort_reason="")
-                self._disable_ai("MISSION_START")
+                self._stop_setup_ai("MISSION_START")
                 print(f"[MISSION] START {strategy}")
                 self._preflight(strategy)
                 self._set_status("SYNC_MISSION")
@@ -393,6 +456,10 @@ class MissionManager(threading.Thread):
                     self._activate_drop_ai()
                 continue
 
+            if name == "WAYPOINT_EDIT_UNLOCKED":
+                self._start_setup_ai()
+                continue
+
             if name == "START_MISSION":
                 strategy = str(payload.get("strategy") or self.state.mission.strategy).upper()
                 if self.mission_active:
@@ -410,6 +477,7 @@ class MissionManager(threading.Thread):
                 continue
 
             if name == "WAYPOINT_EDIT_LOCKED":
+                self._stop_setup_ai("SETUP_EXIT")
                 strategy = str(payload.get("strategy") or self.state.mission.strategy).upper()
                 threading.Thread(
                     target=self.sync_strategy, args=(strategy,),
