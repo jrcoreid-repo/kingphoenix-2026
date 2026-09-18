@@ -88,6 +88,15 @@ def parse_args():
     ap.add_argument("--fuzzy-timeout", type=float, default=30.0)
     ap.add_argument("--center-error", type=float, default=0.12)
     ap.add_argument("--center-frames", type=int, default=2)
+    ap.add_argument(
+        "--center-offset-x",
+        type=float,
+        default=0.0,
+        help=(
+            "horizontal virtual-center offset as fraction of FULL frame width; "
+            "+ shifts desired center right, - shifts it left (e.g. +0.05 = 5% width)"
+        ),
+    )
 
     # ONLY THREE fuzzy states.
     # r <= mid-error starts in MINIMUM territory.
@@ -127,6 +136,8 @@ def validate(a):
         raise SystemExit("require center-error < mid-error < far-error <= 1.0")
     if not 1 <= a.center_frames <= 10:
         raise SystemExit("--center-frames must be 1..10")
+    if not -0.25 <= float(a.center_offset_x) <= 0.25:
+        raise SystemExit("--center-offset-x must be -0.25..+0.25 of full frame width")
     if not 0.03 <= a.minimum_speed <= a.mid_speed <= a.far_speed <= 2.0:
         raise SystemExit("require minimum-speed <= mid-speed <= far-speed <= 2.0m/s")
     if not 0.30 <= a.guard_floor < a.guard_ceiling <= 3.0:
@@ -174,6 +185,10 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
     print(
         f"[FUZZY3] error centre/mid/far={a.center_error:.2f}/{a.mid_error:.2f}/{a.far_error:.2f} | "
         f"speed MIN/MID/FAR={a.minimum_speed:.2f}/{a.mid_speed:.2f}/{a.far_speed:.2f}m/s"
+    )
+    print(
+        f"[FUZZY3] virtual center X offset={a.center_offset_x:+.3f} of full frame width "
+        f"(normalized ex shift={2.0 * float(a.center_offset_x):+.3f})"
     )
     print(f"[FUZZY3] fixed smoothing: alpha={FILTER_ALPHA:.2f}, XY slew={XY_SLEW_MPS2:.2f}m/s^2")
 
@@ -235,7 +250,13 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
             raw_ex = float(ex)
             raw_ey = float(ey)
 
-            if abs(raw_ex) <= float(a.center_error) and abs(raw_ey) <= float(a.center_error):
+            # bbox_control normalizes ex by half-frame width: ex=(cx-W/2)/(W/2).
+            # CLI offset is a fraction of FULL frame width, so +0.05 means
+            # desired center 5% of image width to the RIGHT.
+            adj_ex = clamp(raw_ex - 2.0 * float(a.center_offset_x), -1.0, 1.0)
+            adj_ey = raw_ey
+
+            if abs(adj_ex) <= float(a.center_error) and abs(adj_ey) <= float(a.center_error):
                 center_streak += 1
             else:
                 center_streak = 0
@@ -244,14 +265,14 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
                 zero_xy(test)
                 disable_ai(vision, "FUZZY3_CENTERED")
                 print(
-                    f"[FUZZY3 CENTER] ex={raw_ex:+.3f} ey={raw_ey:+.3f} "
+                    f"[FUZZY3 CENTER] rawEX={raw_ex:+.3f} adjEX={adj_ex:+.3f} ey={adj_ey:+.3f} "
                     f"for {center_streak} frame(s) -> XY ZERO"
                 )
                 return "CENTERED"
 
             # Preserve field-validated camera/body sign mapping.
-            bx = clamp(-raw_ex * X_SIGN, -1.0, 1.0)
-            by = clamp(-raw_ey * Y_SIGN, -1.0, 1.0)
+            bx = clamp(-adj_ex * X_SIGN, -1.0, 1.0)
+            by = clamp(-adj_ey * Y_SIGN, -1.0, 1.0)
 
             if filt_bx is None:
                 filt_bx, filt_by = bx, by
@@ -297,7 +318,8 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
             ey_t = "--" if ey is None else f"{float(ey):+.3f}"
             conf_t = "--" if conf is None else f"{float(conf):.2f}"
             print(
-                f"[FUZZY3XY] {phase:11s} conf={conf_t} ex={ex_t} ey={ey_t} r={radial:.3f} | "
+                f"[FUZZY3XY] {phase:11s} conf={conf_t} rawEX={ex_t} "
+                f"adjEX={(float(ex)-2.0*float(a.center_offset_x)):+.3f} ey={ey_t} r={radial:.3f} | "
                 f"mu(MIN/MID/FAR)={mus[0]:.2f}/{mus[1]:.2f}/{mus[2]:.2f} "
                 f"spd={speed:.2f} VX={vx_cmd:+.2f} VY={vy_cmd:+.2f} "
                 f"center={center_streak}/{a.center_frames}"
