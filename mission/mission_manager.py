@@ -56,14 +56,15 @@ class MissionManager(threading.Thread):
 
     def _startup_report(self):
         m = self.cfg["mission"]; t = self.cfg["takeoff"]; w = self.cfg["waypoint"]
-        v = self.cfg["vision"]; f = self.cfg["guided_fuzzy"]
+        v = self.cfg["vision"]; f = self.cfg["guided_fuzzy"]; d = self.cfg["drop"]
         print("============================================================")
         print(" KINGPHOENIX 2026 - FULL RACE RUNTIME")
         print("============================================================")
         print(
             f"[PLAN] WP={m['total_waypoints']} | TO={t['target_alt_m']:.2f}m@{t['fast_vz_mps']:.2f}m/s | "
             f"WPalt={w['default_alt_m']:.2f}m | AI@WP{m['ai_enable_wp']} | DROP@WP{m['drop_wp']} | "
-            f"YOLO={v['confidence_threshold']:.2f}/{v['confirm_frames']}F | FUZZY={f['timeout_s']:.0f}s | "
+            f"YOLO={v['confidence_threshold']:.2f}/{v['confirm_frames']}F | "
+            f"FUZZY_FORCE_DROP={float(d.get('force_drop_after_fuzzy_s', 8.0)):.1f}s | "
             f"FINAL={w['final_wp_alt_m']:.2f}m"
         )
         print("[PLAN] AUTO speed/accel/cornering: FC PARAMETERS (NO Pi override)")
@@ -252,17 +253,23 @@ class MissionManager(threading.Thread):
                         detector_class_id=int(cfg.get("detector_class_id", 0)),
                         source="FUZZY_FALLBACK",
                     )
-                    centered = self.fuzzy.run(abort_event=self.abort_event)
-                    if not centered:
-                        raise MissionRunError("fuzzy drop timeout; payload NOT released")
-                    ok, message = self.servo.open(source="FUZZY_DROP")
+                    force_drop_s = float((self.cfg.get("drop") or {}).get("force_drop_after_fuzzy_s", 8.0))
+                    centered = self.fuzzy.run(
+                        abort_event=self.abort_event,
+                        max_duration_s=force_drop_s,
+                    )
+                    source = "FUZZY_DROP" if centered else "FORCE_DROP_FALLBACK"
+                    ok, message = self.servo.open(source=source)
                     if not ok:
                         raise MissionRunError(message)
                     with self._drop_lock:
                         self.drop_done = True
                         self.drop_armed = False
-                    print(f"[DROP] FUZZY CENTERED -> {message}")
-                    self._disable_ai("FUZZY_DROP_COMPLETE")
+                    if centered:
+                        print(f"[DROP] FUZZY CENTERED -> {message}")
+                    else:
+                        print(f"[DROP] FUZZY NOT CENTERED AFTER {force_drop_s:.1f}s -> FORCE RELEASE -> {message}")
+                    self._disable_ai("FUZZY_DROP_COMPLETE" if centered else "FORCE_DROP_COMPLETE")
                     self._set_status("AUTO")
                     self._switch_auto(drop_wp + 1)
 
