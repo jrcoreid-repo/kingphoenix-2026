@@ -6,6 +6,7 @@ import time
 from control.fuzzy_drop_controller import FuzzyDropError
 from flight.lidar_takeoff import LidarTakeoffError
 from mission.fc_mission_sync import MissionSyncError
+from safety.pilot_takeover import PilotTakeover
 
 
 class MissionRunError(RuntimeError):
@@ -183,6 +184,10 @@ class MissionManager(threading.Thread):
         while time.monotonic() < deadline:
             if self.abort_event.is_set():
                 raise MissionRunError("ABORTED")
+            if str(self.state.vehicle.mode).upper() != "AUTO":
+                raise PilotTakeover(
+                    f"operator changed mode during AUTO mission to {self.state.vehicle.mode}"
+                )
             if monitor_drop:
                 self._drop_monitor_once()
             with self._reached_lock:
@@ -281,6 +286,11 @@ class MissionManager(threading.Thread):
                 self._set_status("COMPLETE")
                 print("[MISSION] COMPLETE | vehicle DISARMED")
 
+        except PilotTakeover as exc:
+            self._disable_ai("PILOT_TAKEOVER")
+            self.tx_zero_best_effort()
+            self._set_status("ABORTED", abort_reason=str(exc))
+            print(f"[PILOT TAKEOVER] {exc} | autonomous mode command suppressed")
         except (MissionRunError, MissionSyncError, LidarTakeoffError, FuzzyDropError) as exc:
             self._disable_ai("MISSION_ERROR")
             self.tx_zero_best_effort()
