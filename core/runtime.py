@@ -47,6 +47,12 @@ class KingphoenixRuntime:
             "confidence_threshold"
         ] = mission_conf
 
+        # Race preflight policy also lives in full_mission.json so field
+        # tuning does not require editing multiple config files.
+        readiness_cfg = dict(self.cfg.get("readiness", {}) or {})
+        readiness_cfg.update(dict(self.full_cfg.get("preflight", {}) or {}))
+        self.cfg["readiness"] = readiness_cfg
+
         self.state = SharedState()
         self.events = EventBus()
         self.stop_event = threading.Event()
