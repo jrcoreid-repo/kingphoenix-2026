@@ -67,7 +67,6 @@ class FuzzyDropController:
 
         hz = float(self.cfg.get("control_hz", 20.0))
         period = 1.0 / hz
-        timeout = float(self.cfg.get("timeout_s", 20.0))
         confidence = float(self.cfg.get("confidence_threshold", 0.25))
         freshness = float(self.cfg.get("vision_freshness_s", 0.20))
         center_error = float(self.cfg["center_error"])
@@ -84,7 +83,6 @@ class FuzzyDropController:
         guard_outside_s = float(self.cfg.get("guard_outside_s", 0.35))
         lidar_stale_s = float(self.cfg.get("lidar_stale_s", 0.60))
 
-        deadline = time.monotonic() + timeout
         last_frame = None
         center_streak = 0
         filt_bx = filt_by = None
@@ -97,7 +95,7 @@ class FuzzyDropController:
 
         self.log("[FUZZY] ACTIVE | 3-state MIN/MID/FAR | target-loss => XY ZERO")
 
-        while time.monotonic() < deadline:
+        while True:
             if abort_event is not None and abort_event.is_set():
                 self._zero()
                 raise FuzzyDropError("aborted during fuzzy alignment")
@@ -211,6 +209,3 @@ class FuzzyDropController:
 
             time.sleep(0.005)
 
-        self._zero()
-        self.log(f"[FUZZY] TIMEOUT {timeout:.1f}s -> XY ZERO")
-        return False
