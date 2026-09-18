@@ -43,9 +43,11 @@ class RuntimeLogger(threading.Thread):
                 if bottom.get("ai_state") == "ACTIVE":
                     conf = bottom.get("confidence")
                     conf_t = "--" if conf is None else f"{float(conf):.2f}"
+                    model_ms = float(bottom.get("model_ms") or 0.0)
                     print(
                         f"[AI] Bottom {float(bottom.get('fps') or 0.0):.1f}fps | "
-                        f"conf={conf_t} | target={'YES' if bottom.get('vision_valid') else 'NO'}"
+                        f"YOLO {model_ms:.1f}ms | conf={conf_t} | "
+                        f"target={'YES' if bottom.get('vision_valid') else 'NO'}"
                     )
                 next_rt = now + self.realtime_s
 
