@@ -35,6 +35,18 @@ class KingphoenixRuntime:
     def __init__(self):
         self.cfg = load_json("system.json")
         self.full_cfg = load_full_mission_config()
+
+        # full_mission.json is the operator-facing source of truth for race
+        # detection thresholds. Keep the Hailo decoder floor low enough for
+        # both fast AUTO-drop confirmation and fuzzy fallback.
+        mission_conf = min(
+            float(self.full_cfg["vision"]["confidence_threshold"]),
+            float(self.full_cfg["guided_fuzzy"]["confidence_threshold"]),
+        )
+        self.cfg.setdefault("ai", {}).setdefault("detector", {})[
+            "confidence_threshold"
+        ] = mission_conf
+
         self.state = SharedState()
         self.events = EventBus()
         self.stop_event = threading.Event()
