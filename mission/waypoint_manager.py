@@ -76,6 +76,11 @@ class WaypointManager:
         wp = int(wp)
         if strategy not in ("LEFT", "RIGHT"):
             return False, f"UNKNOWN STRATEGY {strategy}"
+        if strategy != self.edit_strategy:
+            return False, (
+                f"EDIT SESSION LOCKED TO {self.edit_strategy}; "
+                f"cannot save {strategy}/WP{wp}"
+            )
         if not 1 <= wp <= self.total_waypoints:
             return False, f"WAYPOINT OUT OF RANGE 1..{self.total_waypoints}"
 
