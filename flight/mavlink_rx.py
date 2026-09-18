@@ -36,8 +36,13 @@ class MavlinkRxWorker(threading.Thread):
         except Exception:
             pass
 
-    def _mission_protocol_packet(self, msg):
+    def _mission_protocol_packet(self, msg, src_sys, src_comp):
         if self.mission_protocol_queue is None or msg.get_type() not in self.MISSION_PROTOCOL_TYPES:
+            return
+        if (
+            int(src_sys) != int(self.connection.target_system)
+            or int(src_comp) != int(self.connection.target_component)
+        ):
             return
         try:
             self.mission_protocol_queue.put_nowait(msg)
@@ -72,16 +77,17 @@ class MavlinkRxWorker(threading.Thread):
             msg_type = msg.get_type()
             if msg_type == "BAD_DATA":
                 continue
-            self._mirror_packet(msg)
-            self._mission_protocol_packet(msg)
-
-            v = self.state.vehicle
-            v.mark_message(msg_type, now)
             try:
                 src_sys = int(msg.get_srcSystem())
                 src_comp = int(msg.get_srcComponent())
             except Exception:
                 src_sys, src_comp = 0, 0
+
+            self._mirror_packet(msg)
+            self._mission_protocol_packet(msg, src_sys, src_comp)
+
+            v = self.state.vehicle
+            v.mark_message(msg_type, now)
 
             if msg_type == "HEARTBEAT":
                 if src_sys == self.connection.target_system and src_comp == self.connection.target_component:
@@ -184,10 +190,14 @@ class MavlinkRxWorker(threading.Thread):
                 v.current_mission_item = int(msg.seq)
 
             elif msg_type == "MISSION_ITEM_REACHED":
-                self.events.publish(
-                    "MISSION_ITEM_REACHED",
-                    {"seq": int(msg.seq), "source_system": src_sys, "source_component": src_comp},
-                )
+                if (
+                    src_sys == self.connection.target_system
+                    and src_comp == self.connection.target_component
+                ):
+                    self.events.publish(
+                        "MISSION_ITEM_REACHED",
+                        {"seq": int(msg.seq), "source_system": src_sys, "source_component": src_comp},
+                    )
 
             elif msg_type == "STATUSTEXT":
                 raw_text = getattr(msg, "text", "")
