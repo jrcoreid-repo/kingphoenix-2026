@@ -120,5 +120,13 @@
     "print_raw_mavlink": false,
     "print_every_frame": false,
     "print_every_control_loop": false
+  },
+  "preflight": {
+    "heartbeat_max_age_s": 2.5,
+    "require_gps": true,
+    "gps_min_fix_type": 5,
+    "require_lidar": true,
+    "lidar_max_age_s": 0.3,
+    "require_wlan1": true
   }
 }
