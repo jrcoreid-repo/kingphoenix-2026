@@ -1,0 +1,23 @@
+name: Python Full Mission Smoke
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - '**/*.py'
+      - 'config/*.json'
+      - '.github/workflows/python-full-mission-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax compile
+        run: python -m compileall -q .
+      - name: Full mission contract
+        run: python tools/full_mission_self_check.py
