@@ -520,6 +520,14 @@ class GcsServer(threading.Thread):
             if not ready:
                 failed = ",".join(readiness.get("failed_critical") or []) or "NOT_READY"
                 return ack(tx, False, f"START BLOCKED: readiness {failed}")
+            if self.servo is not None:
+                servo_state = str(getattr(self.servo, "logical_state", "UNKNOWN")).upper()
+                if servo_state != "CLOSE":
+                    return ack(
+                        tx,
+                        False,
+                        f"START BLOCKED: payload servo is {servo_state}; CLOSE from SETUP first",
+                    )
             strategy = self.state.mission.strategy
             ok, detail = self.waypoints.validate_strategy(
                 strategy,
