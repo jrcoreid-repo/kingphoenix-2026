@@ -106,6 +106,14 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("servo OPEN/CLOSE PWM must be 800..2200us")
     if open_pwm == close_pwm:
         raise FullMissionConfigError("servo OPEN and CLOSE PWM must differ")
+    require_closed = servo.get("require_closed_before_start", True)
+    if not isinstance(require_closed, bool):
+        raise FullMissionConfigError("servo.require_closed_before_start must be boolean")
+
+    landing = cfg.get("landing") or {}
+    land_timeout = _finite("landing.timeout_s", landing.get("timeout_s", 45.0))
+    if land_timeout < 5.0:
+        raise FullMissionConfigError("landing.timeout_s must be >=5.0")
 
     logging = cfg.get("logging") or {}
     if _finite("logging.realtime_summary_interval_s", logging.get("realtime_summary_interval_s")) < 0.5:
