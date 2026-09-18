@@ -59,7 +59,8 @@
     "drop_once": true,
     "servo_default_state": "OPEN",
     "servo_drop_state": "OPEN",
-    "auto_close_after_drop": false
+    "auto_close_after_drop": false,
+    "force_drop_after_fuzzy_s": 8.0
   },
   "servo": {
     "channels": [
