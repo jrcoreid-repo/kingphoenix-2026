@@ -298,9 +298,10 @@ class MissionManager(threading.Thread):
         except (MissionRunError, MissionSyncError, LidarTakeoffError, FuzzyDropError) as exc:
             self._disable_ai("MISSION_ERROR")
             self.tx_zero_best_effort()
-            if str(exc) == "ABORTED":
-                self._set_status("ABORTED", abort_reason="GCS_ABORT")
-                print("[MISSION] ABORTED")
+            if self.abort_event.is_set() or str(exc) == "ABORTED":
+                reason = self.state.mission.abort_reason or "GCS_ABORT"
+                self._set_status("ABORTED", abort_reason=reason)
+                print(f"[MISSION] ABORTED | reason={reason}")
             else:
                 self._set_status("ERROR", abort_reason=str(exc))
                 print(f"[ERROR] MISSION: {exc}")
