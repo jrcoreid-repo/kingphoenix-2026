@@ -66,10 +66,23 @@ class MissionManager(threading.Thread):
             f"FINAL={w['final_wp_alt_m']:.2f}m"
         )
         print("[PLAN] AUTO speed/accel/cornering: FC PARAMETERS (NO Pi override)")
+        mav_ok = self.state.vehicle.connected and self.state.vehicle.heartbeat_age_s() <= 2.5
+        front = self.state.get_vision_snapshot("front")
+        bottom = self.state.get_vision_snapshot("bottom")
+        hailo_ok = self.vision.shared_ai is not None and bool(
+            getattr(self.vision.shared_ai, "ready", False)
+        )
+        servo_state = str(getattr(self.servo, "logical_state", "UNKNOWN"))
+        print(
+            f"[INIT] MAVLink={'OK' if mav_ok else 'WAIT'} | "
+            f"FrontCam={'OK' if front.get('camera_open') else 'WAIT'} | "
+            f"BottomCam={'OK' if bottom.get('camera_open') else 'WAIT'} | "
+            f"Hailo={'OK' if hailo_ok else 'WAIT'} | Servo={servo_state}"
+        )
         for strategy in ("LEFT", "RIGHT"):
             ok, detail = self.waypoints.validate_strategy(strategy, int(m["total_waypoints"]))
             print(f"[MISSION] {'PASS' if ok else 'WARN'} {strategy}: {detail}")
-        print("[READY] Waiting START L / START R")
+        print("[READY] Waiting START L / START R | live preflight runs on START")
 
     def _activate_drop_ai(self):
         if self.drop_done or self.drop_armed:
@@ -143,6 +156,13 @@ class MissionManager(threading.Thread):
             raise MissionRunError("LiDAR not fresh")
         if self.vision.shared_ai is None or not bool(getattr(self.vision.shared_ai, "ready", False)):
             raise MissionRunError("Hailo/YOLO not ready")
+        servo_cfg = self.cfg.get("servo") or {}
+        if bool(servo_cfg.get("require_closed_before_start", True)):
+            servo_state = str(getattr(self.servo, "logical_state", "UNKNOWN")).upper()
+            if servo_state != "CLOSE":
+                raise MissionRunError(
+                    f"START blocked: payload servo is {servo_state}; CLOSE it manually from GCS SETUP first"
+                )
         bottom = self.state.get_vision_snapshot("bottom")
         if not bool(bottom.get("camera_open", False)):
             raise MissionRunError("bottom camera not open")
