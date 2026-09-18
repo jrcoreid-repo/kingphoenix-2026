@@ -40,6 +40,14 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("require 1 <= ai_enable_wp < drop_wp <= total_waypoints")
     if final_wp != total:
         raise FullMissionConfigError("mission.final_wp must equal total_waypoints")
+    if _finite("mission.auto_wp_timeout_s", mission.get("auto_wp_timeout_s", 60.0)) < 5.0:
+        raise FullMissionConfigError("mission.auto_wp_timeout_s must be >=5.0")
+    if str(mission.get("abort_mode", "LOITER")).upper() not in {
+        "LOITER", "ALT_HOLD", "BRAKE"
+    }:
+        raise FullMissionConfigError(
+            "mission.abort_mode must be LOITER, ALT_HOLD, or BRAKE"
+        )
 
     preflight = cfg.get("preflight") or {}
     heartbeat_max_age = _finite(
@@ -78,6 +86,29 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("takeoff.handoff_m must be >=0.12 and below target-tolerance")
     if ceiling <= target:
         raise FullMissionConfigError("takeoff.ceiling_m must be above target_alt_m")
+    taper = _finite("takeoff.taper_zone_m", takeoff.get("taper_zone_m"))
+    kick_alt = _finite("takeoff.kick_alt_m", takeoff.get("kick_alt_m"))
+    zero_flush = _finite("takeoff.zero_flush_s", takeoff.get("zero_flush_s", 0.15))
+    timeout = _finite("takeoff.timeout_s", takeoff.get("timeout_s", 15.0))
+    settle = _finite("takeoff.arm_settle_s", takeoff.get("arm_settle_s", 0.35))
+    stale = _finite("takeoff.lidar_stale_s", takeoff.get("lidar_stale_s", 0.60))
+    command_hz = _finite("takeoff.command_hz", takeoff.get("command_hz", 10.0))
+    if tol <= 0.0 or tol >= target:
+        raise FullMissionConfigError("takeoff.tolerance_m must be >0 and < target")
+    if taper <= 0.0 or taper >= target:
+        raise FullMissionConfigError("takeoff.taper_zone_m must be >0 and < target")
+    if kick_alt < target or kick_alt > 10.0:
+        raise FullMissionConfigError("takeoff.kick_alt_m must be target..10.0m")
+    if not 0.0 <= zero_flush <= 2.0:
+        raise FullMissionConfigError("takeoff.zero_flush_s must be 0..2.0")
+    if timeout < 3.0:
+        raise FullMissionConfigError("takeoff.timeout_s must be >=3.0")
+    if not 0.0 <= settle <= 3.0:
+        raise FullMissionConfigError("takeoff.arm_settle_s must be 0..3.0")
+    if stale <= 0.05:
+        raise FullMissionConfigError("takeoff.lidar_stale_s must be >0.05")
+    if not 2.0 <= command_hz <= 30.0:
+        raise FullMissionConfigError("takeoff.command_hz must be 2..30Hz")
 
     waypoint = cfg.get("waypoint") or {}
     default_alt = _finite("waypoint.default_alt_m", waypoint.get("default_alt_m"))
@@ -86,6 +117,12 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("waypoint altitudes must be 0.30..5.00m")
     if bool(waypoint.get("override_auto_speed", False)):
         raise FullMissionConfigError("waypoint.override_auto_speed must remain false; AUTO speed belongs to FC parameters")
+    acceptance = _finite(
+        "waypoint.acceptance_radius_m",
+        waypoint.get("acceptance_radius_m", 0.50),
+    )
+    if not 0.05 <= acceptance <= 10.0:
+        raise FullMissionConfigError("waypoint.acceptance_radius_m must be 0.05..10.0")
 
     vision = cfg.get("vision") or {}
     conf = _finite("vision.confidence_threshold", vision.get("confidence_threshold"))
@@ -97,6 +134,12 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("vision.confirm_frames must be 1..10")
     if not 0.05 <= coarse <= 1.0:
         raise FullMissionConfigError("vision.coarse_center_error_max must be 0.05..1.0")
+    if _finite("vision.freshness_s", vision.get("freshness_s", 0.20)) <= 0.02:
+        raise FullMissionConfigError("vision.freshness_s must be >0.02")
+    if int(vision.get("detector_class_id", 0)) < 0:
+        raise FullMissionConfigError("vision.detector_class_id must be >=0")
+    if str(vision.get("model_mode", "YOLO26_ONLY")).upper() != "YOLO26_ONLY":
+        raise FullMissionConfigError("vision.model_mode must remain YOLO26_ONLY")
 
     fuzzy = cfg.get("guided_fuzzy") or {}
     center = _finite("guided_fuzzy.center_error", fuzzy.get("center_error"))
@@ -113,6 +156,42 @@ def validate_full_mission_config(cfg: dict) -> None:
     guard_ceiling = _finite("guided_fuzzy.guard_ceiling_m", fuzzy.get("guard_ceiling_m"))
     if not 0.30 <= floor < guard_ceiling <= 3.0:
         raise FullMissionConfigError("invalid guided_fuzzy LiDAR guard")
+    fuzzy_timeout = _finite("guided_fuzzy.timeout_s", fuzzy.get("timeout_s", 20.0))
+    fuzzy_hz = _finite("guided_fuzzy.control_hz", fuzzy.get("control_hz", 20.0))
+    fuzzy_fresh = _finite(
+        "guided_fuzzy.vision_freshness_s",
+        fuzzy.get("vision_freshness_s", 0.20),
+    )
+    center_frames = int(fuzzy.get("center_confirm_frames", 2))
+    alpha = _finite("guided_fuzzy.filter_alpha", fuzzy.get("filter_alpha", 0.40))
+    slew = _finite("guided_fuzzy.xy_slew_mps2", fuzzy.get("xy_slew_mps2", 1.50))
+    lost = _finite("guided_fuzzy.lost_timeout_s", fuzzy.get("lost_timeout_s", 0.15))
+    outside = _finite("guided_fuzzy.guard_outside_s", fuzzy.get("guard_outside_s", 0.35))
+    fuzzy_lidar_stale = _finite(
+        "guided_fuzzy.lidar_stale_s",
+        fuzzy.get("lidar_stale_s", 0.60),
+    )
+    if not 2.0 <= fuzzy_timeout <= 120.0:
+        raise FullMissionConfigError("guided_fuzzy.timeout_s must be 2..120")
+    if not 10.0 <= fuzzy_hz <= 30.0:
+        raise FullMissionConfigError("guided_fuzzy.control_hz must be 10..30Hz")
+    if fuzzy_fresh <= 0.02:
+        raise FullMissionConfigError("guided_fuzzy.vision_freshness_s must be >0.02")
+    if not 1 <= center_frames <= 10:
+        raise FullMissionConfigError("guided_fuzzy.center_confirm_frames must be 1..10")
+    if not 0.0 < alpha <= 1.0:
+        raise FullMissionConfigError("guided_fuzzy.filter_alpha must be (0,1]")
+    if slew <= 0.0:
+        raise FullMissionConfigError("guided_fuzzy.xy_slew_mps2 must be >0")
+    if lost <= 0.0 or outside <= 0.0 or fuzzy_lidar_stale <= 0.05:
+        raise FullMissionConfigError("guided_fuzzy time guards must be positive")
+    for axis in ("x_sign", "y_sign"):
+        if float(fuzzy.get(axis, 0.0)) not in (-1.0, 1.0):
+            raise FullMissionConfigError(f"guided_fuzzy.{axis} must be -1 or +1")
+    for axis in ("center_offset_x", "center_offset_y"):
+        offset = _finite(f"guided_fuzzy.{axis}", fuzzy.get(axis, 0.0))
+        if not -0.25 <= offset <= 0.25:
+            raise FullMissionConfigError(f"guided_fuzzy.{axis} must be -0.25..+0.25")
 
     servo = cfg.get("servo") or {}
     channels = servo.get("channels") or []
@@ -189,6 +268,12 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError(
             "mission_sync.acceptance_radius_tolerance_m must be >=0"
         )
+    for key in ("position_tolerance_m", "altitude_tolerance_m"):
+        if _finite(f"mission_sync.{key}", sync.get(key, 0.0)) < 0.0:
+            raise FullMissionConfigError(f"mission_sync.{key} must be >=0")
+    for key in ("read_timeout_s", "upload_timeout_s", "set_current_timeout_s"):
+        if _finite(f"mission_sync.{key}", sync.get(key, 0.0)) <= 0.0:
+            raise FullMissionConfigError(f"mission_sync.{key} must be >0")
 
     logging = cfg.get("logging") or {}
     if _finite("logging.realtime_summary_interval_s", logging.get("realtime_summary_interval_s")) < 0.5:
