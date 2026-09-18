@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import time
 
+from safety.pilot_takeover import PilotTakeover
+
 
 class FuzzyDropError(RuntimeError):
     pass
@@ -100,7 +102,7 @@ class FuzzyDropController:
             v = self.state.vehicle
             if v.mode != "GUIDED":
                 self._zero()
-                raise FuzzyDropError(f"mode changed during fuzzy alignment: {v.mode}")
+                raise PilotTakeover(f"operator changed mode during fuzzy alignment to {v.mode}")
             if not v.connected or v.heartbeat_age_s() > 2.5:
                 self._zero()
                 raise FuzzyDropError("heartbeat lost during fuzzy alignment")
