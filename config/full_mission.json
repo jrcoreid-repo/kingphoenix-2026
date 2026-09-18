@@ -98,6 +98,19 @@
     "guard_outside_s": 0.35,
     "lidar_stale_s": 0.6
   },
+  "setup_ai": {
+    "enabled": true,
+    "switch_interval_s": 10,
+    "model_mode": "YOLO26_ONLY",
+    "front": {
+      "task": "GATE_NAV",
+      "detector_class_id": 1
+    },
+    "bottom": {
+      "task": "DROP_ALIGNMENT",
+      "detector_class_id": 0
+    }
+  },
   "camera": {
     "front_on_at_start": true,
     "bottom_on_at_start": true,
