@@ -46,9 +46,16 @@ class ProfiledLidarTakeoff:
             f"taper={near:.2f}m/s | trigger={trigger:.2f}m"
         )
 
+        if abort_event is not None and abort_event.is_set():
+            raise LidarTakeoffError("aborted before takeoff mode change")
+
         mode = self.command.set_mode("GUIDED")
         if not mode.ok:
             raise LidarTakeoffError(f"GUIDED failed: {mode.reason}")
+
+        if abort_event is not None and abort_event.is_set():
+            self._zero()
+            raise LidarTakeoffError("aborted before arming")
 
         if not self.state.vehicle.armed:
             arm = self.command.arm()
