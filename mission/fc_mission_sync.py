@@ -93,6 +93,7 @@ class FCMissionSync:
             "lat": lat,
             "lon": lon,
             "alt_m": float(msg.z),
+            "acceptance_radius_m": float(getattr(msg, "param2", 0.0)),
         }
 
     def download(self) -> list[dict]:
@@ -121,6 +122,12 @@ class FCMissionSync:
     def compare(self, route: list[dict], actual: list[dict]) -> tuple[bool, str]:
         pos_tol = float(self.cfg.get("position_tolerance_m", 0.30))
         alt_tol = float(self.cfg.get("altitude_tolerance_m", 0.05))
+        acceptance_tol = float(self.cfg.get("acceptance_radius_tolerance_m", 0.05))
+        expected_acceptance = float(self.cfg.get("acceptance_radius_m", 0.50))
+        relative_frames = {
+            int(mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT),
+            int(mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT),
+        }
         expected_count = len(route) + 1
         if len(actual) != expected_count:
             return False, f"count {len(actual)} != {expected_count}"
@@ -129,12 +136,23 @@ class FCMissionSync:
             got = actual[seq]
             if int(got["command"]) != mavutil.mavlink.MAV_CMD_NAV_WAYPOINT:
                 return False, f"seq{seq} command mismatch"
+            if int(got["frame"]) not in relative_frames:
+                return False, f"WP{seq} frame mismatch ({got['frame']} not REL_HOME)"
             pos_err = distance_m(expected["lat"], expected["lon"], got["lat"], got["lon"])
             alt_err = abs(float(expected["alt_m"]) - float(got["alt_m"]))
+            acceptance_err = abs(
+                float(got.get("acceptance_radius_m", 0.0)) - expected_acceptance
+            )
             if pos_err > pos_tol:
                 return False, f"WP{seq} position error {pos_err:.3f}m"
             if alt_err > alt_tol:
                 return False, f"WP{seq} altitude error {alt_err:.3f}m"
+            if acceptance_err > acceptance_tol:
+                return False, (
+                    f"WP{seq} acceptance radius error {acceptance_err:.3f}m "
+                    f"(FC={float(got.get('acceptance_radius_m', 0.0)):.2f} "
+                    f"expected={expected_acceptance:.2f})"
+                )
         return True, "MATCH"
 
     def upload(self, route: list[dict]):
