@@ -57,7 +57,7 @@ class FuzzyDropController:
     def _zero(self):
         self.tx.send_body_velocity(0.0, 0.0, 0.0)
 
-    def run(self, abort_event=None) -> bool:
+    def run(self, abort_event=None, max_duration_s=None) -> bool:
         if abort_event is not None and abort_event.is_set():
             raise FuzzyDropError("aborted before fuzzy GUIDED transition")
         mode = self.command.set_mode("GUIDED")
@@ -83,6 +83,7 @@ class FuzzyDropController:
         guard_outside_s = float(self.cfg.get("guard_outside_s", 0.35))
         lidar_stale_s = float(self.cfg.get("lidar_stale_s", 0.60))
 
+        deadline = None if max_duration_s is None else time.monotonic() + float(max_duration_s)
         last_frame = None
         center_streak = 0
         filt_bx = filt_by = None
@@ -96,6 +97,10 @@ class FuzzyDropController:
         self.log("[FUZZY] ACTIVE | 3-state MIN/MID/FAR | target-loss => XY ZERO")
 
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                self._zero()
+                self.log(f"[FUZZY] FALLBACK WINDOW {float(max_duration_s):.1f}s EXPIRED -> XY ZERO")
+                return False
             if abort_event is not None and abort_event.is_set():
                 self._zero()
                 raise FuzzyDropError("aborted during fuzzy alignment")
