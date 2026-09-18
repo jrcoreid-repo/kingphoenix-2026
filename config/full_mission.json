@@ -75,7 +75,6 @@
   },
   "guided_fuzzy": {
     "enabled": true,
-    "timeout_s": 20,
     "control_hz": 20,
     "confidence_threshold": 0.25,
     "vision_freshness_s": 0.2,
