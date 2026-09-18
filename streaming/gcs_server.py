@@ -472,13 +472,28 @@ class GcsServer(threading.Thread):
             )
 
         if kind == "UNLOCK_EDIT":
+            if self.state.vehicle.armed:
+                return ack(tx, False, "EDIT MODE BLOCKED: vehicle ARMED")
             strategy = normalize_strategy(msg.get("strategy") or self.state.mission.strategy)
+            if self.waypoints.edit_unlocked and strategy != self.waypoints.edit_strategy:
+                return ack(
+                    tx,
+                    False,
+                    f"EDIT MODE ALREADY LOCKED TO {self.waypoints.edit_strategy}",
+                )
             self.state.mission.strategy = strategy
             self.waypoints.unlock(strategy)
             return ack(tx, True, f"EDIT MODE UNLOCKED / {strategy}")
 
         if kind == "LOCK_EDIT":
             strategy = normalize_strategy(msg.get("strategy") or self.state.mission.strategy)
+            if self.waypoints.edit_unlocked and strategy != self.waypoints.edit_strategy:
+                return ack(
+                    tx,
+                    False,
+                    f"LOCK REJECTED: edit session belongs to {self.waypoints.edit_strategy}",
+                )
+            strategy = self.waypoints.edit_strategy if self.waypoints.edit_unlocked else strategy
             self.state.mission.strategy = strategy
             self.waypoints.lock(strategy)
             self.events.publish("WAYPOINT_EDIT_LOCKED", {"strategy": strategy})
@@ -495,7 +510,23 @@ class GcsServer(threading.Thread):
             return ack(tx, True, "STRATEGY " + strategy)
 
         if kind == "START_MISSION":
+            if self.waypoints.edit_unlocked:
+                return ack(tx, False, "START BLOCKED: EXIT SETUP MODE")
+            if self.state.vehicle.armed:
+                return ack(tx, False, "START BLOCKED: vehicle already ARMED")
+            with self.state.lock:
+                ready = bool(self.state.system.get("ready_for_mission", False))
+                readiness = dict(self.state.system.get("readiness") or {})
+            if not ready:
+                failed = ",".join(readiness.get("failed_critical") or []) or "NOT_READY"
+                return ack(tx, False, f"START BLOCKED: readiness {failed}")
             strategy = self.state.mission.strategy
+            ok, detail = self.waypoints.validate_strategy(
+                strategy,
+                int(getattr(self.waypoints, "total_waypoints", 11)),
+            )
+            if not ok:
+                return ack(tx, False, f"START BLOCKED: {strategy} {detail}")
             self.events.publish(
                 "START_MISSION",
                 {"strategy": strategy},
@@ -529,6 +560,8 @@ class GcsServer(threading.Thread):
                 return ack(tx, False, f"SERVO ACTION REJECTED: {action or '--'}")
             if self.servo is None:
                 return ack(tx, False, "SERVO BACKEND UNAVAILABLE")
+            if self.state.vehicle.armed:
+                return ack(tx, False, "SERVO GCS CONTROL BLOCKED: vehicle ARMED")
             if not self.waypoints.edit_unlocked:
                 return ack(tx, False, "SERVO BLOCKED: ENTER SETUP MODE")
 
