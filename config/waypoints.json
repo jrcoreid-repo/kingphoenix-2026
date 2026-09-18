@@ -1,30 +1,116 @@
 {
   "LEFT": {
-    "WP1": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP2": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP3": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP4": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP5": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP6": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP7": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP8": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP9": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP10": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP11": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP12": {"lat": null, "lon": null, "alt_m": 1.2}
+    "WP1": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP2": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP3": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP4": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP5": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP6": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP7": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP8": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP9": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP10": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP11": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    }
   },
   "RIGHT": {
-    "WP1": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP2": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP3": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP4": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP5": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP6": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP7": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP8": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP9": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP10": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP11": {"lat": null, "lon": null, "alt_m": 1.2},
-    "WP12": {"lat": null, "lon": null, "alt_m": 1.2}
+    "WP1": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP2": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP3": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP4": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP5": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP6": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP7": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP8": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP9": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP10": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    },
+    "WP11": {
+      "lat": null,
+      "lon": null,
+      "alt_m": 1
+    }
   }
 }
