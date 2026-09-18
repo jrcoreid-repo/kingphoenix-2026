@@ -29,10 +29,24 @@ def main():
     assert int(full["servo"]["close_pwm"]) == 2000
     assert full["servo"]["require_closed_before_start"] is True
     assert float(full["landing"]["timeout_s"]) >= 5.0
+    assert full["preflight"]["require_gps"] is True
+    assert int(full["preflight"]["gps_min_fix_type"]) >= 5
+    assert full["preflight"]["require_lidar"] is True
+    assert full["preflight"]["require_wlan1"] is True
+    assert full["drop"]["armed_from_wp"] == full["mission"]["ai_enable_wp"]
+    assert full["drop"]["fallback_wp"] == full["mission"]["drop_wp"]
+    assert full["drop"]["auto_close_after_drop"] is False
+    assert full["camera"]["front_on_at_start"] is True
+    assert full["camera"]["bottom_on_at_start"] is True
+    assert full["camera"]["front_ai"] is False
+    assert full["camera"]["bottom_ai_on_start"] is False
 
     mav = system["mavlink"]
     assert mav["transport"] == "MAVPROXY_UDP"
     assert mav["connection"] == "udpin:127.0.0.1:14550"
+    assert system["mission_planner_gateway"]["enabled"] is False
+    assert system["mission_planner_gateway"]["policy"] == "MAVPROXY_DIRECT"
+    assert system["pi_health"]["wifi_interface"] == "wlan1"
 
     route = system["ai"]["route"]
     assert route["camera"] == "none"
