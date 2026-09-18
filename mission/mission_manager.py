@@ -145,6 +145,14 @@ class MissionManager(threading.Thread):
         ok, detail = self.waypoints.validate_strategy(strategy, total)
         if not ok:
             raise MissionRunError(detail)
+        with self.state.lock:
+            readiness = dict(self.state.system.get("readiness") or {})
+            ready_for_mission = bool(self.state.system.get("ready_for_mission", False))
+        if not ready_for_mission:
+            failed = list(readiness.get("failed_critical") or [])
+            detail = ",".join(failed) if failed else str(readiness.get("status", "NOT_READY"))
+            raise MissionRunError(f"START blocked: readiness NOT READY ({detail})")
+
         v = self.state.vehicle
         if not v.connected or v.heartbeat_age_s() > 2.5:
             raise MissionRunError("MAVLink heartbeat not ready")
@@ -337,6 +345,9 @@ class MissionManager(threading.Thread):
             payload = event.payload or {}
 
             if name == "MISSION_ITEM_REACHED":
+                # Ignore delayed/stale reached packets before AUTO begins.
+                if str(self.state.mission.status).upper() != "AUTO":
+                    continue
                 seq = int(payload.get("seq", -1))
                 with self._reached_lock:
                     first = seq not in self._reached
