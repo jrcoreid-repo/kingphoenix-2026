@@ -24,6 +24,7 @@ _setup_lock = threading.Lock()
 _setup_busy = False
 _wp_lock = threading.Lock()
 _wp_busy = False
+_active_edit_strategy = None
 
 
 def _safe_set(tag, value):
@@ -49,18 +50,23 @@ def _strategy():
 
 
 def _setup_worker(entering):
-    global _setup_busy
+    global _setup_busy, _active_edit_strategy
     try:
-        strategy = _strategy()
+        strategy = _strategy() if entering else (_active_edit_strategy or _strategy())
         if entering:
             _safe_set("waypoint_save_status", f"UNLOCKING {strategy} EDIT...")
             response, _ = v235._control_transaction(
                 {"type": "UNLOCK_EDIT", "strategy": strategy}, timeout_s=3.0
             )
             message = _ack(response, "UNLOCK_EDIT")
+            _active_edit_strategy = strategy
             gcs.edit_mode_unlocked = True
             gcs._set_operator_mode(True)
-            _safe_set("waypoint_save_status", message)
+            try:
+                dpg.configure_item("pos_strat_selector", enabled=False)
+            except Exception:
+                pass
+            _safe_set("waypoint_save_status", message + " | STRATEGY LOCKED FOR THIS EDIT SESSION")
         else:
             _safe_set("waypoint_save_status", f"LOCKING {strategy} + SYNC QUEUE...")
             response, _ = v235._control_transaction(
@@ -69,6 +75,11 @@ def _setup_worker(entering):
             message = _ack(response, "LOCK_EDIT")
             gcs.edit_mode_unlocked = False
             gcs._set_operator_mode(False)
+            _active_edit_strategy = None
+            try:
+                dpg.configure_item("pos_strat_selector", enabled=True)
+            except Exception:
+                pass
             _safe_set("waypoint_save_status", message)
     except Exception as exc:
         _safe_set("waypoint_save_status", f"SETUP TX FAILED - {exc}")
@@ -129,7 +140,7 @@ def _save_waypoint_v238():
     except Exception:
         _safe_set("waypoint_save_status", "BLOCKED - INVALID WAYPOINT")
         return
-    strategy = _strategy()
+    strategy = _active_edit_strategy or _strategy()
     if not 1 <= wp <= 11:
         _safe_set("waypoint_save_status", "BLOCKED - WP MUST BE 1..11")
         return
