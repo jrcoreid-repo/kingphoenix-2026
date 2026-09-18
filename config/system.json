@@ -67,15 +67,16 @@
     "note": "MAVProxy is the sole /dev/ttyAMA0 owner. main.py receives/sends MAVLink through localhost UDP 14550."
   },
   "mission_planner_gateway": {
-    "enabled": true,
+    "enabled": false,
     "bind_ip": "0.0.0.0",
     "port": 14555,
     "destination_port": 14555,
     "destination_ip": "AUTO_GCS",
-    "policy": "RACE",
+    "policy": "MAVPROXY_DIRECT",
     "learn_peer": true,
     "strict_inbound_source": true,
-    "mirror_queue_size": 512
+    "mirror_queue_size": 512,
+    "note": "Disabled in FULL_MISSION: Mission Planner/RTK uses the proven direct MAVProxy output path; main.py does not relay RTCM."
   },
   "rates_hz": {
     "mission": 50,
@@ -333,6 +334,7 @@
     "disk_warn_free_gb": 2,
     "disk_fail_free_gb": 0.5,
     "disk_path": "/",
-    "vcgencmd_timeout_s": 0.35
+    "vcgencmd_timeout_s": 0.35,
+    "wifi_interface": "wlan1"
   }
 }
