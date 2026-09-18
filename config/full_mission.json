@@ -5,39 +5,39 @@
     "ai_enable_wp": 6,
     "drop_wp": 7,
     "final_wp": 11,
-    "auto_wp_timeout_s": 60.0,
+    "auto_wp_timeout_s": 60,
     "abort_mode": "LOITER"
   },
   "takeoff": {
-    "target_alt_m": 0.50,
-    "fast_vz_mps": 0.80,
-    "near_vz_mps": 0.20,
-    "taper_zone_m": 0.10,
+    "target_alt_m": 0.5,
+    "fast_vz_mps": 0.8,
+    "near_vz_mps": 0.2,
+    "taper_zone_m": 0.1,
     "handoff_m": 0.25,
     "tolerance_m": 0.05,
-    "kick_alt_m": 3.0,
-    "ceiling_m": 0.80,
+    "kick_alt_m": 3,
+    "ceiling_m": 0.8,
     "zero_flush_s": 0.15,
-    "timeout_s": 15.0,
+    "timeout_s": 15,
     "arm_settle_s": 0.35,
-    "lidar_stale_s": 0.60,
-    "command_hz": 10.0
+    "lidar_stale_s": 0.6,
+    "command_hz": 10
   },
   "waypoint": {
-    "default_alt_m": 1.00,
-    "final_wp_alt_m": 1.00,
-    "acceptance_radius_m": 0.50,
+    "default_alt_m": 1,
+    "final_wp_alt_m": 1,
+    "acceptance_radius_m": 0.5,
     "auto_speed_source": "FC_PARAMETERS",
     "override_auto_speed": false
   },
   "mission_sync": {
     "compare_before_upload": true,
     "verify_after_upload": true,
-    "position_tolerance_m": 0.30,
+    "position_tolerance_m": 0.3,
     "altitude_tolerance_m": 0.05,
-    "read_timeout_s": 5.0,
-    "upload_timeout_s": 12.0,
-    "set_current_timeout_s": 2.0
+    "read_timeout_s": 5,
+    "upload_timeout_s": 12,
+    "set_current_timeout_s": 2
   },
   "vision": {
     "camera": "bottom",
@@ -47,7 +47,7 @@
     "ai_initial_state": "OFF",
     "confidence_threshold": 0.25,
     "confirm_frames": 2,
-    "freshness_s": 0.20,
+    "freshness_s": 0.2,
     "coarse_center_required": true,
     "coarse_center_error_max": 0.35,
     "disable_ai_after_drop": true
@@ -61,37 +61,41 @@
     "auto_close_after_drop": false
   },
   "servo": {
-    "channels": [7, 8],
+    "channels": [
+      7,
+      8
+    ],
     "open_pwm": 1100,
     "close_pwm": 2000,
     "startup_state": "OPEN",
-    "test_close_s": 0.50,
-    "test_finish_state": "OPEN"
+    "test_close_s": 0.5,
+    "test_finish_state": "OPEN",
+    "require_closed_before_start": true
   },
   "guided_fuzzy": {
     "enabled": true,
-    "timeout_s": 20.0,
-    "control_hz": 20.0,
+    "timeout_s": 20,
+    "control_hz": 20,
     "confidence_threshold": 0.25,
-    "vision_freshness_s": 0.20,
+    "vision_freshness_s": 0.2,
     "center_error": 0.12,
     "center_confirm_frames": 2,
-    "center_offset_x": 0.0,
-    "center_offset_y": 0.0,
+    "center_offset_x": 0,
+    "center_offset_y": 0,
     "mid_error": 0.25,
     "far_error": 0.45,
     "minimum_speed_mps": 0.12,
-    "mid_speed_mps": 0.30,
-    "far_speed_mps": 0.60,
-    "filter_alpha": 0.40,
-    "xy_slew_mps2": 1.50,
+    "mid_speed_mps": 0.3,
+    "far_speed_mps": 0.6,
+    "filter_alpha": 0.4,
+    "xy_slew_mps2": 1.5,
     "x_sign": -1,
     "y_sign": -1,
     "lost_timeout_s": 0.15,
-    "guard_floor_m": 0.60,
-    "guard_ceiling_m": 1.40,
+    "guard_floor_m": 0.6,
+    "guard_ceiling_m": 1.4,
     "guard_outside_s": 0.35,
-    "lidar_stale_s": 0.60
+    "lidar_stale_s": 0.6
   },
   "camera": {
     "front_on_at_start": true,
@@ -104,14 +108,15 @@
   },
   "landing": {
     "land_after_final_wp": true,
-    "final_wp_number": 11
+    "final_wp_number": 11,
+    "timeout_s": 45
   },
   "logging": {
     "level": "NORMAL",
     "mission_events_immediate": true,
     "warnings_immediate": true,
-    "realtime_summary_interval_s": 2.0,
-    "system_summary_interval_s": 5.0,
+    "realtime_summary_interval_s": 2,
+    "system_summary_interval_s": 5,
     "print_raw_mavlink": false,
     "print_every_frame": false,
     "print_every_control_loop": false
