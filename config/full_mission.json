@@ -37,7 +37,8 @@
     "altitude_tolerance_m": 0.05,
     "read_timeout_s": 5,
     "upload_timeout_s": 12,
-    "set_current_timeout_s": 2
+    "set_current_timeout_s": 2,
+    "acceptance_radius_tolerance_m": 0.05
   },
   "vision": {
     "camera": "bottom",
