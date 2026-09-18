@@ -46,6 +46,10 @@ class KingphoenixRuntime:
         self.cfg.setdefault("ai", {}).setdefault("detector", {})[
             "confidence_threshold"
         ] = mission_conf
+        # BboxControlEstimator has its own confidence gate. Keep it aligned
+        # with the mission JSON too, otherwise lowering YOLO confidence in the
+        # race config could still yield ex/ey=None and silently block a drop.
+        self.cfg.setdefault("vision_control", {})["confidence_min"] = mission_conf
 
         # Race preflight policy also lives in full_mission.json so field
         # tuning does not require editing multiple config files.
