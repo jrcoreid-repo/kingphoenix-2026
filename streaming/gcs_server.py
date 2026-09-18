@@ -483,7 +483,8 @@ class GcsServer(threading.Thread):
                 )
             self.state.mission.strategy = strategy
             self.waypoints.unlock(strategy)
-            return ack(tx, True, f"EDIT MODE UNLOCKED / {strategy}")
+            self.events.publish("WAYPOINT_EDIT_UNLOCKED", {"strategy": strategy})
+            return ack(tx, True, f"SETUP MODE ON / {strategy} / AI TEST SWITCH 10s")
 
         if kind == "LOCK_EDIT":
             strategy = normalize_strategy(msg.get("strategy") or self.state.mission.strategy)
@@ -497,7 +498,7 @@ class GcsServer(threading.Thread):
             self.state.mission.strategy = strategy
             self.waypoints.lock(strategy)
             self.events.publish("WAYPOINT_EDIT_LOCKED", {"strategy": strategy})
-            return ack(tx, True, f"EDIT MODE LOCKED / {strategy} / FC SYNC QUEUED")
+            return ack(tx, True, f"SETUP MODE OFF / {strategy} / AI OFF / FC SYNC QUEUED")
 
         if kind == "SAVE_WAYPOINT":
             strategy = normalize_strategy(msg["strategy"])
