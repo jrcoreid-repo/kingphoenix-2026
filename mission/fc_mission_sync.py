@@ -150,8 +150,12 @@ class FCMissionSync:
 
         with self.lock:
             self._drain()
-            self.tx.mission_clear_all()
-            time.sleep(0.05)
+            if self.tx.mission_clear_all():
+                try:
+                    self._wait({"MISSION_ACK"}, 1.0)
+                except MissionSyncError:
+                    pass
+            self._drain()
             if not self.tx.mission_count(count):
                 raise MissionSyncError("MISSION_COUNT TX failed")
             sent = set()

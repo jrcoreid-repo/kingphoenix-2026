@@ -227,6 +227,11 @@ class CameraStreamWorker(threading.Thread):
 
         try:
             self.camera.open()
+            self.state.update_vision(
+                self.camera_name,
+                camera_open=True,
+                video_state="CAPTURE",
+            )
             print(f"[VISION:{self.camera_name}] source opened: {self.camera.source}")
 
         except Exception as exc:
@@ -238,14 +243,9 @@ class CameraStreamWorker(threading.Thread):
             while not self.stop_event.is_set():
                 start = time.monotonic()
 
-                if not self.state.system.get("gcs_connected", False):
-                    time.sleep(0.05)
-                    continue
-
-                if self._ensure_destination() is None:
-                    time.sleep(0.05)
-                    continue
-
+                # Capture/AI are autonomous and must never depend on GCS video.
+                # Both sensors stay warm from runtime start; streaming is added
+                # opportunistically when a GCS destination exists.
                 packet = self.camera.read()
                 if packet is None:
                     self.state.vision[self.camera_name]["video_state"] = "OFFLINE"
@@ -433,14 +433,20 @@ class CameraStreamWorker(threading.Thread):
                 )
 
                 # Same frame_id is used in the image barcode and metadata.
-                video_ok = self.video.write(frame)
+                # GCS streaming is optional; mission vision keeps running even
+                # with no connected GCS.
+                endpoint = self._ensure_destination()
+                video_ok = False
                 meta_ok = False
-                if video_ok:
-                    meta_ok = self.meta.send(display_metadata)
+                if endpoint is not None:
+                    video_ok = self.video.write(frame)
+                    if video_ok:
+                        meta_ok = self.meta.send(display_metadata)
 
                 self.state.update_vision(
                     self.camera_name,
-                    video_state="LIVE" if video_ok else "OFFLINE",
+                    camera_open=True,
+                    video_state=("LIVE" if endpoint is not None and video_ok else "CAPTURE"),
                     ai_state=ai_state_for_meta,
                     ai_task=route_task,
                     model_mode=route_model_mode,
@@ -492,7 +498,11 @@ class CameraStreamWorker(threading.Thread):
                 )
 
                 now_s = time.monotonic()
-                if now_s - self._last_diag_s >= 2.0:
+                if (
+                    self.meta is not None
+                    and self.run_profile != "FULL_MISSION"
+                    and now_s - self._last_diag_s >= 2.0
+                ):
                     self._last_diag_s = now_s
                     print(
                         f"[META-TX:{self.camera_name}] "
@@ -516,6 +526,11 @@ class CameraStreamWorker(threading.Thread):
 
         finally:
             self.camera.close()
+            self.state.update_vision(
+                self.camera_name,
+                camera_open=False,
+                video_state="OFFLINE",
+            )
             if self.video is not None:
                 self.video.stop()
             if self.meta is not None:

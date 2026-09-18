@@ -26,13 +26,22 @@ class GcsServer(threading.Thread):
     }
     SERVO_ACTION_ALLOWLIST = {"OPEN", "CLOSE", "TEST"}
 
-    def __init__(self, state, events, waypoints, stop_event, command_manager=None):
+    def __init__(
+        self,
+        state,
+        events,
+        waypoints,
+        stop_event,
+        command_manager=None,
+        servo_controller=None,
+    ):
         super().__init__(name="GCSServer")
         self.state = state
         self.events = events
         self.waypoints = waypoints
         self.stop_event = stop_event
         self.command = command_manager
+        self.servo = servo_controller
 
         cfg = load_json("system.json")
         self.stream_cfg = cfg["stream"]
@@ -430,12 +439,17 @@ class GcsServer(threading.Thread):
             )
 
         if kind == "UNLOCK_EDIT":
-            self.waypoints.unlock()
-            return ack(tx, True, "EDIT MODE UNLOCKED")
+            strategy = normalize_strategy(msg.get("strategy") or self.state.mission.strategy)
+            self.state.mission.strategy = strategy
+            self.waypoints.unlock(strategy)
+            return ack(tx, True, f"EDIT MODE UNLOCKED / {strategy}")
 
         if kind == "LOCK_EDIT":
-            self.waypoints.lock()
-            return ack(tx, True, "EDIT MODE LOCKED")
+            strategy = normalize_strategy(msg.get("strategy") or self.state.mission.strategy)
+            self.state.mission.strategy = strategy
+            self.waypoints.lock(strategy)
+            self.events.publish("WAYPOINT_EDIT_LOCKED", {"strategy": strategy})
+            return ack(tx, True, f"EDIT MODE LOCKED / {strategy} / FC SYNC QUEUED")
 
         if kind == "SAVE_WAYPOINT":
             strategy = normalize_strategy(msg["strategy"])
@@ -480,25 +494,28 @@ class GcsServer(threading.Thread):
             action = str(msg.get("action") or "").upper().strip()
             if action not in self.SERVO_ACTION_ALLOWLIST:
                 return ack(tx, False, f"SERVO ACTION REJECTED: {action or '--'}")
+            if self.servo is None:
+                return ack(tx, False, "SERVO BACKEND UNAVAILABLE")
+            if not self.waypoints.edit_unlocked:
+                return ack(tx, False, "SERVO BLOCKED: ENTER SETUP MODE")
 
-            request = {
-                "action": action,
-                "source": "GCS",
-                "timestamp_ns": time.monotonic_ns(),
-            }
-            with self.state.lock:
-                self.state.system["servo_control_request"] = dict(request)
-            self.events.publish("SERVO_CONTROL_REQUEST", dict(request))
-            print(f"[GCS-SERVO] RX action={action} | actuator backend PENDING")
+            if action == "OPEN":
+                ok, message = self.servo.open(source="GCS")
+            elif action == "CLOSE":
+                ok, message = self.servo.close(source="GCS")
+            else:
+                ok, message = self.servo.test(source="GCS")
+
+            print(f"[GCS-SERVO] {message}")
             return ack(
                 tx,
-                True,
-                f"SERVO {action} RECEIVED - BACKEND PENDING",
+                bool(ok),
+                message,
                 data={
                     "action": action,
-                    "accepted": True,
-                    "executed": False,
-                    "backend": "PENDING",
+                    "accepted": bool(ok),
+                    "executed": bool(ok),
+                    "backend": "MAV_CMD_DO_SET_SERVO",
                 },
             )
 
