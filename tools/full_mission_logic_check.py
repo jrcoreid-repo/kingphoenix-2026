@@ -208,6 +208,17 @@ def check_force_drop_path():
     assert command.land_calls == 1
 
 
+def check_setup_ai_contract():
+    cfg = load_full_mission_config()
+    setup = cfg["setup_ai"]
+    assert setup["enabled"] is True
+    assert float(setup["switch_interval_s"]) == 10.0
+    assert setup["front"]["task"] == "GATE_NAV"
+    assert int(setup["front"]["detector_class_id"]) == 1
+    assert setup["bottom"]["task"] == "DROP_ALIGNMENT"
+    assert int(setup["bottom"]["detector_class_id"]) == 0
+
+
 def check_mission_compare_contract():
     cfg = load_full_mission_config()
     state = SharedState()
@@ -264,8 +275,9 @@ def main():
     check_visual_drop_path()
     check_fuzzy_fallback_path()
     check_force_drop_path()
+    check_setup_ai_contract()
     check_mission_compare_contract()
-    print("[LOGIC-CHECK] visual-drop + fuzzy-center + force-drop + mission-compare PASS")
+    print("[LOGIC-CHECK] visual-drop + fuzzy-center + force-drop + setup-ai + mission-compare PASS")
     return 0
 
 
