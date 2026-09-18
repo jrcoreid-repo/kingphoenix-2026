@@ -171,7 +171,10 @@ class FCMissionSync:
                     if ack_type != mavutil.mavlink.MAV_MISSION_ACCEPTED:
                         raise MissionSyncError(f"FC mission rejected ACK={ack_type}")
                     if len(sent) != count:
-                        raise MissionSyncError(f"MISSION_ACK before all items sent ({len(sent)}/{count})")
+                        # A late ACCEPTED ACK from the preceding CLEAR_ALL can
+                        # arrive after MISSION_COUNT. Ignore it until all
+                        # requested upload items have actually been sent.
+                        continue
                     return
 
                 seq = int(msg.seq)
