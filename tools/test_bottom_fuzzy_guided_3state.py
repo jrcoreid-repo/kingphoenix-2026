@@ -93,8 +93,17 @@ def parse_args():
         type=float,
         default=0.0,
         help=(
-            "horizontal virtual-center offset as fraction of FULL frame width; "
-            "+ shifts desired center right, - shifts it left (e.g. +0.05 = 5% width)"
+            "virtual-center X offset as fraction of FULL frame width; "
+            "+ shifts desired center right, - shifts it left"
+        ),
+    )
+    ap.add_argument(
+        "--center-offset-y",
+        type=float,
+        default=0.0,
+        help=(
+            "virtual-center Y offset as fraction of FULL frame height; "
+            "+ shifts desired center down, - shifts it up"
         ),
     )
 
@@ -138,6 +147,8 @@ def validate(a):
         raise SystemExit("--center-frames must be 1..10")
     if not -0.25 <= float(a.center_offset_x) <= 0.25:
         raise SystemExit("--center-offset-x must be -0.25..+0.25 of full frame width")
+    if not -0.25 <= float(a.center_offset_y) <= 0.25:
+        raise SystemExit("--center-offset-y must be -0.25..+0.25 of full frame height")
     if not 0.03 <= a.minimum_speed <= a.mid_speed <= a.far_speed <= 2.0:
         raise SystemExit("require minimum-speed <= mid-speed <= far-speed <= 2.0m/s")
     if not 0.30 <= a.guard_floor < a.guard_ceiling <= 3.0:
@@ -187,8 +198,10 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
         f"speed MIN/MID/FAR={a.minimum_speed:.2f}/{a.mid_speed:.2f}/{a.far_speed:.2f}m/s"
     )
     print(
-        f"[FUZZY3] virtual center X offset={a.center_offset_x:+.3f} of full frame width "
-        f"(normalized ex shift={2.0 * float(a.center_offset_x):+.3f})"
+        f"[FUZZY3] virtual center offset X={a.center_offset_x:+.3f} frame-width "
+        f"(dEX={2.0 * float(a.center_offset_x):+.3f}) | "
+        f"Y={a.center_offset_y:+.3f} frame-height "
+        f"(dEY={2.0 * float(a.center_offset_y):+.3f})"
     )
     print(f"[FUZZY3] fixed smoothing: alpha={FILTER_ALPHA:.2f}, XY slew={XY_SLEW_MPS2:.2f}m/s^2")
 
@@ -250,11 +263,13 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
             raw_ex = float(ex)
             raw_ey = float(ey)
 
-            # bbox_control normalizes ex by half-frame width: ex=(cx-W/2)/(W/2).
-            # CLI offset is a fraction of FULL frame width, so +0.05 means
-            # desired center 5% of image width to the RIGHT.
+            # bbox_control normalizes ex/ey by half-frame dimensions:
+            # ex=(cx-W/2)/(W/2), ey=(cy-H/2)/(H/2).
+            # CLI offsets are fractions of FULL frame dimensions, therefore
+            # +0.05 corresponds to +0.10 in normalized ex/ey.
+            # +X moves desired center RIGHT; +Y moves desired center DOWN.
             adj_ex = clamp(raw_ex - 2.0 * float(a.center_offset_x), -1.0, 1.0)
-            adj_ey = raw_ey
+            adj_ey = clamp(raw_ey - 2.0 * float(a.center_offset_y), -1.0, 1.0)
 
             if abs(adj_ex) <= float(a.center_error) and abs(adj_ey) <= float(a.center_error):
                 center_streak += 1
@@ -265,7 +280,8 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
                 zero_xy(test)
                 disable_ai(vision, "FUZZY3_CENTERED")
                 print(
-                    f"[FUZZY3 CENTER] rawEX={raw_ex:+.3f} adjEX={adj_ex:+.3f} ey={adj_ey:+.3f} "
+                    f"[FUZZY3 CENTER] rawEX={raw_ex:+.3f} adjEX={adj_ex:+.3f} "
+                    f"rawEY={raw_ey:+.3f} adjEY={adj_ey:+.3f} "
                     f"for {center_streak} frame(s) -> XY ZERO"
                 )
                 return "CENTERED"
@@ -316,10 +332,12 @@ def run_alignment(test, state, vision, a, detector_class_id: int):
         if now - last_print >= 0.20:
             ex_t = "--" if ex is None else f"{float(ex):+.3f}"
             ey_t = "--" if ey is None else f"{float(ey):+.3f}"
+            adj_ex_t = "--" if ex is None else f"{clamp(float(ex)-2.0*float(a.center_offset_x), -1.0, 1.0):+.3f}"
+            adj_ey_t = "--" if ey is None else f"{clamp(float(ey)-2.0*float(a.center_offset_y), -1.0, 1.0):+.3f}"
             conf_t = "--" if conf is None else f"{float(conf):.2f}"
             print(
-                f"[FUZZY3XY] {phase:11s} conf={conf_t} rawEX={ex_t} "
-                f"adjEX={(float(ex)-2.0*float(a.center_offset_x)):+.3f} ey={ey_t} r={radial:.3f} | "
+                f"[FUZZY3XY] {phase:11s} conf={conf_t} rawEX={ex_t} adjEX={adj_ex_t} "
+                f"rawEY={ey_t} adjEY={adj_ey_t} r={radial:.3f} | "
                 f"mu(MIN/MID/FAR)={mus[0]:.2f}/{mus[1]:.2f}/{mus[2]:.2f} "
                 f"spd={speed:.2f} VX={vx_cmd:+.2f} VY={vy_cmd:+.2f} "
                 f"center={center_streak}/{a.center_frames}"
