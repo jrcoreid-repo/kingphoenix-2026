@@ -71,6 +71,8 @@ class WaypointManager:
     def save_current(self, strategy, wp):
         if not self.edit_unlocked:
             return False, "EDIT MODE LOCKED"
+        if self.state.vehicle.armed:
+            return False, "WAYPOINT SAVE BLOCKED: vehicle ARMED"
 
         strategy = str(strategy).upper()
         wp = int(wp)
