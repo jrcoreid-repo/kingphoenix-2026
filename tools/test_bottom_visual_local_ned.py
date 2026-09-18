@@ -86,11 +86,29 @@ class VisualPositionFlightTest(DirectFlightTest):
         elif msg.get_type() == "LOCAL_POSITION_NED":
             self.local_vel = (float(msg.vx), float(msg.vy), float(msg.vz))
 
-    def yaw_ok(self, max_age_s: float = 0.25) -> bool:
+    def yaw_ok(self, max_age_s: float = 0.35) -> bool:
         return (
             self.yaw_rad is not None
             and (time.monotonic() - self.yaw_ts) <= float(max_age_s)
         )
+
+    def poll_drain(self, first_timeout: float = 0.02, max_messages: int = 80):
+        """Consume one blocking MAVLink message, then drain queued messages.
+
+        The direct test connection requests many telemetry streams whose combined
+        rate is much higher than the 20 Hz vision loop. Reading only one MAVLink
+        packet per loop can leave ATTITUDE buried in the serial receive backlog
+        and make yaw look stale even while the FC itself is flying normally.
+        """
+        self.poll(first_timeout)
+        drained = 1
+        while drained < int(max_messages):
+            msg = self.master.recv_match(blocking=False)
+            if msg is None:
+                break
+            self._handle(msg)
+            drained += 1
+        return drained
 
 
 def parse_args():
@@ -375,7 +393,7 @@ def run_visual_position_tracking(
 
     while time.monotonic() < deadline:
         loop_start = time.monotonic()
-        test.poll(0.02)
+        test.poll_drain(0.02)
         check_flight_health(test)
 
         if test.mode != "GUIDED":
@@ -383,7 +401,21 @@ def run_visual_position_tracking(
                 f"operator changed mode during visual position tracking to {test.mode}"
             )
         if not test.yaw_ok():
-            raise FlightTestError("ATTITUDE yaw stale during visual position tracking")
+            # Do not fly a visual correction on stale heading. Hold the current
+            # LOCAL_NED position and allow telemetry a short recovery window.
+            if test.local is not None:
+                cur_n, cur_e, cur_d = map(float, test.local)
+                send_local_position_target(test, cur_n, cur_e, cur_d)
+            yaw_recover_deadline = time.monotonic() + 1.0
+            while time.monotonic() < yaw_recover_deadline:
+                test.poll_drain(0.02)
+                if test.yaw_ok():
+                    print("[VISPOS] ATTITUDE yaw telemetry recovered")
+                    break
+            else:
+                raise FlightTestError(
+                    "ATTITUDE yaw telemetry stale >1.0s; visual target frozen"
+                )
 
         outside_since, lidar_loss_since = check_lidar_guard(
             test,
@@ -542,7 +574,7 @@ def wait_for_manual_landing(test: VisualPositionFlightTest):
 
     next_tx = 0.0
     while True:
-        test.poll(0.10)
+        test.poll_drain(0.05)
         if not test.heartbeat_ok():
             raise FlightTestError("heartbeat lost while waiting for manual landing")
         if test.mode != "GUIDED":
@@ -616,7 +648,7 @@ def main() -> int:
         # Explicitly request/check yaw before arming.
         yaw_deadline = time.monotonic() + 2.0
         while time.monotonic() < yaw_deadline and not test.yaw_ok():
-            test.poll(0.05)
+            test.poll_drain(0.05)
         if not test.yaw_ok():
             raise FlightTestError("ATTITUDE yaw unavailable/stale")
 
