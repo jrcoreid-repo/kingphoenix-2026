@@ -245,8 +245,8 @@ def main():
     print("[GCS] V2.3.7 FULL OPERATOR CONTROL TX")
     print("[GCS] START L/R -> Pi SET_STRATEGY + START_MISSION")
     print("[GCS] ABORT -> Pi ABORT_MISSION")
-    print("[GCS] SERVO OPEN/CLOSE/TEST -> Pi SERVO_CONTROL (backend may report PENDING)")
-    print("[GCS] Existing live preflight, waypoint save, MP bridge and FC bench controls unchanged")
+    print("[GCS] SERVO OPEN/CLOSE/TEST -> Pi MAV_CMD_DO_SET_SERVO backend")
+    print("[GCS] Mission Planner + RTK transport: direct MAVProxy path")
 
     v236.main()
 
