@@ -96,13 +96,16 @@ class FakeTakeoff:
 
 
 class FakeFuzzy:
-    def __init__(self):
+    def __init__(self, result=True):
         self.calls = 0
+        self.result = bool(result)
+        self.max_duration_s = None
 
-    def run(self, abort_event=None):
+    def run(self, abort_event=None, max_duration_s=None):
         assert abort_event is not None and not abort_event.is_set()
         self.calls += 1
-        return True
+        self.max_duration_s = max_duration_s
+        return self.result
 
     def _zero(self):
         return None
@@ -129,7 +132,7 @@ class TestMissionManager(MissionManager):
         return None
 
 
-def build_manager(visual_success):
+def build_manager(visual_success, fuzzy_success=True):
     cfg = load_full_mission_config()
     state = SharedState()
     state.vehicle.connected = True
@@ -142,7 +145,7 @@ def build_manager(visual_success):
     vision = FakeVision()
     servo = FakeServo()
     takeoff = FakeTakeoff()
-    fuzzy = FakeFuzzy()
+    fuzzy = FakeFuzzy(fuzzy_success)
 
     manager = TestMissionManager(
         state,
@@ -188,6 +191,19 @@ def check_fuzzy_fallback_path():
     assert m.waited == list(range(1, 12))
     assert fuzzy.calls == 1
     assert servo.open_calls == ["FUZZY_DROP"]
+    assert command.modes == ["AUTO", "AUTO"]
+    assert command.land_calls == 1
+
+
+def check_force_drop_path():
+    m, state, command, fc, vision, servo, takeoff, fuzzy = build_manager(False, fuzzy_success=False)
+    m._run_mission("LEFT")
+
+    assert state.mission.status == "COMPLETE"
+    assert fuzzy.calls == 1
+    assert fuzzy.max_duration_s == float(m.cfg["drop"]["force_drop_after_fuzzy_s"])
+    assert servo.open_calls == ["FORCE_DROP_FALLBACK"]
+    assert fc.current == [1, 8]
     assert command.modes == ["AUTO", "AUTO"]
     assert command.land_calls == 1
 
@@ -247,8 +263,9 @@ def check_mission_compare_contract():
 def main():
     check_visual_drop_path()
     check_fuzzy_fallback_path()
+    check_force_drop_path()
     check_mission_compare_contract()
-    print("[LOGIC-CHECK] visual-drop + fuzzy-fallback + mission-compare PASS")
+    print("[LOGIC-CHECK] visual-drop + fuzzy-center + force-drop + mission-compare PASS")
     return 0
 
 
