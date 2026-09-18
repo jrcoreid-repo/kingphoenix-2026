@@ -197,7 +197,11 @@ class MissionManager(threading.Thread):
         raise MissionRunError(f"AUTO timeout waiting WP{seq}")
 
     def _switch_auto(self, seq: int):
+        if self.abort_event.is_set():
+            raise MissionRunError("ABORTED")
         self.fc_sync.set_current(int(seq))
+        if self.abort_event.is_set():
+            raise MissionRunError("ABORTED")
         result = self.command.set_mode("AUTO")
         if not result.ok:
             raise MissionRunError(f"AUTO failed: {result.reason}")
@@ -266,6 +270,8 @@ class MissionManager(threading.Thread):
                     self._wait_reached(wp)
 
                 print(f"[MISSION] WP{final_wp} REACHED -> LAND")
+                if self.abort_event.is_set():
+                    raise MissionRunError("ABORTED")
                 self._set_status("LANDING")
                 land = self.command.land()
                 if not land.ok:
