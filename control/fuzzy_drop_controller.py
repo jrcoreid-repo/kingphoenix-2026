@@ -58,6 +58,8 @@ class FuzzyDropController:
         self.tx.send_body_velocity(0.0, 0.0, 0.0)
 
     def run(self, abort_event=None) -> bool:
+        if abort_event is not None and abort_event.is_set():
+            raise FuzzyDropError("aborted before fuzzy GUIDED transition")
         mode = self.command.set_mode("GUIDED")
         if not mode.ok:
             raise FuzzyDropError(f"GUIDED failed: {mode.reason}")
