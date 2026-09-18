@@ -68,7 +68,7 @@ class GcsServer(threading.Thread):
             "active_ai_camera": self.state.vision.get(
                 "active_ai_camera", "front"
             ),
-            "version": "2.3.7",
+            "version": "2.3.8",
             "bench_control": self.command is not None,
             "live_preflight": True,
             "mission_planner_gateway": mp_status,
@@ -165,6 +165,12 @@ class GcsServer(threading.Thread):
         return str(ip), None
 
     def _set_mp_destination(self, tx, msg):
+        if not bool(self.mp_cfg.get("enabled", False)):
+            return ack(
+                tx,
+                False,
+                "MP GATEWAY DISABLED - FULL_MISSION USES DIRECT MAVPROXY/RTK PATH",
+            )
         ip, error = self._validated_mp_ip(msg.get("ip"))
         if error:
             return ack(tx, False, f"MISSION PLANNER IP REJECTED: {error}")
@@ -199,6 +205,12 @@ class GcsServer(threading.Thread):
         )
 
     def _clear_mp_destination(self, tx):
+        if not bool(self.mp_cfg.get("enabled", False)):
+            return ack(
+                tx,
+                False,
+                "MP GATEWAY DISABLED - FULL_MISSION USES DIRECT MAVPROXY/RTK PATH",
+            )
         with self.state.lock:
             self.state.system.pop("mission_planner_destination_override", None)
         print("[MP-GATEWAY] GCS runtime destination override CLEARED")
@@ -214,6 +226,30 @@ class GcsServer(threading.Thread):
             "configured_port": self.mp_destination_port,
             "policy": str(self.mp_cfg.get("policy", "RACE")).upper(),
         }
+
+    def _strategy_preflight_check(self):
+        results = {}
+        for strategy in ("LEFT", "RIGHT"):
+            try:
+                ok, detail = self.waypoints.validate_strategy(
+                    strategy,
+                    int(getattr(self.waypoints, "total_waypoints", 11)),
+                )
+            except Exception as exc:
+                ok, detail = False, f"{type(exc).__name__}: {exc}"
+            results[strategy] = (bool(ok), str(detail))
+
+        valid = [name for name, (ok, _) in results.items() if ok]
+        if len(valid) == 2:
+            status = "PASS"
+        elif len(valid) == 1:
+            status = "WARN"
+        else:
+            status = "FAIL"
+        detail = " | ".join(
+            f"{name}={'OK' if ok else info}" for name, (ok, info) in results.items()
+        )
+        return {"status": status, "detail": detail}
 
     def _live_preflight_snapshot(self):
         """Return one point-in-time readiness snapshot directly from Pi state.
@@ -265,16 +301,13 @@ class GcsServer(threading.Thread):
             "Front Camera": self._copy_check(ready_checks.get("front_camera"), "FAIL", "front camera readiness unavailable"),
             "Bottom Camera": self._copy_check(ready_checks.get("bottom_camera"), "FAIL", "bottom camera readiness unavailable"),
             "YOLO26 / Hailo": self._copy_check(ready_checks.get("hailo_ai"), "FAIL", "Hailo readiness unavailable"),
-            # Mission content is intentionally not promoted to PASS until its
-            # loader/strategy validation is wired into the authoritative state.
             "Mission File": {
-                "status": "WARN",
-                "detail": "TEST STATUS / validation not integrated yet",
+                "status": "PASS" if int(getattr(self.waypoints, "total_waypoints", 0)) == 11 else "FAIL",
+                "detail": (
+                    f"full mission contract WP1-WP{int(getattr(self.waypoints, 'total_waypoints', 0))}"
+                ),
             },
-            "Strategy Data": {
-                "status": "WARN",
-                "detail": "TEST STATUS / LEFT-RIGHT validation not integrated yet",
-            },
+            "Strategy Data": self._strategy_preflight_check(),
             "Battery": {
                 "status": "PASS" if connected and v.battery_v is not None else "FAIL",
                 "detail": (
@@ -316,7 +349,7 @@ class GcsServer(threading.Thread):
         print("[GCS] V2.3 bench control: ARM/DISARM + DISARMED mode select")
         print("[GCS] V2.3.4 live PRE-FLIGHT request endpoint enabled")
         print("[GCS] V2.3.5 Mission Planner destination control enabled")
-        print("[GCS] V2.3.7 mission TX + servo request endpoint enabled")
+        print("[GCS] V2.3.8 full-mission control endpoint enabled")
 
         while not self.stop_event.is_set():
             try:
