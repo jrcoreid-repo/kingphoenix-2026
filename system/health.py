@@ -182,10 +182,14 @@ class PiHealthMonitor:
         rssi_dbm = None
 
         try:
-            with open(f"/sys/class/net/{iface}/operstate", "r") as f:
-                connected = f.read().strip().lower() == "up"
+            with open(f"/sys/class/net/{iface}/carrier", "r") as f:
+                connected = f.read().strip() == "1"
         except Exception:
-            connected = False
+            try:
+                with open(f"/sys/class/net/{iface}/operstate", "r") as f:
+                    connected = f.read().strip().lower() == "up"
+            except Exception:
+                connected = False
 
         try:
             with open("/proc/net/wireless", "r") as f:
