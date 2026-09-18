@@ -58,10 +58,19 @@ class RuntimeLogger(threading.Thread):
                 t = "--" if temp is None else f"{float(temp):.0f}C"
                 l = "--" if load is None else f"{float(load):.0f}%"
                 r = "--" if ram is None else f"{float(ram):.0f}%"
-                fix = "--" if v.gps_fix_type is None else str(v.gps_fix_type)
+                fix_map = {
+                    0: "NO_GPS",
+                    1: "NO_FIX",
+                    2: "2D",
+                    3: "3D",
+                    4: "DGPS",
+                    5: "RTK_FLOAT",
+                    6: "RTK_FIXED",
+                }
+                fix = "--" if v.gps_fix_type is None else fix_map.get(int(v.gps_fix_type), str(v.gps_fix_type))
                 sats = "--" if v.gps_satellites is None else str(v.gps_satellites)
                 hdop = "--" if v.gps_hdop is None else f"{float(v.gps_hdop):.2f}"
-                print(f"[SYSTEM] CPU {t} | Load {l} | RAM {r} | GPS fix={fix} sats={sats} HDOP={hdop}")
+                print(f"[SYSTEM] CPU {t} | Load {l} | RAM {r} | GPS {fix} sats={sats} HDOP={hdop}")
                 next_sys = now + self.system_s
 
             time.sleep(0.10)
