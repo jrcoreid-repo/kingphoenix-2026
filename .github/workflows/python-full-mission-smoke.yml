@@ -25,3 +25,5 @@ jobs:
         run: python tools/full_mission_self_check.py
       - name: Production module wiring
         run: python tools/full_mission_wiring_check.py
+      - name: Mission orchestration logic
+        run: python tools/full_mission_logic_check.py
