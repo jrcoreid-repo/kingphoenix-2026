@@ -1,0 +1,24 @@
+{
+  "fc": {
+    "device": "/dev/ttyAMA0",
+    "baud": 921600
+  },
+  "runner": {
+    "bind_ip": "127.0.0.1",
+    "bind_port": 14551,
+    "dest_ip": "127.0.0.1",
+    "dest_port": 14550
+  },
+  "mission_planner": {
+    "bind_ip": "0.0.0.0",
+    "bind_port": 14555,
+    "learn_peer": true,
+    "fixed_ip": "",
+    "fixed_port": 14555,
+    "fc_uplink_allow_types": [
+      "GPS_RTCM_DATA",
+      "GPS_INJECT_DATA"
+    ]
+  },
+  "stats_interval_s": 5.0
+}
