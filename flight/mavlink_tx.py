@@ -244,6 +244,55 @@ class MavlinkTx:
         except Exception:
             return False
 
+    def mission_item_int_raw(
+        self,
+        *,
+        seq: int,
+        frame: int,
+        command: int,
+        current: int = 0,
+        autocontinue: int = 1,
+        param1: float = 0.0,
+        param2: float = 0.0,
+        param3: float = 0.0,
+        param4: float = float("nan"),
+        lat: float = 0.0,
+        lon: float = 0.0,
+        alt_m: float = 0.0,
+    ):
+        """Send an arbitrary MISSION_ITEM_INT while preserving mission semantics."""
+        master = self.with_master()
+        if master is None:
+            return False
+        try:
+            from pymavlink import mavutil
+            args = [
+                self.target_system,
+                self.target_component,
+                int(seq),
+                int(frame),
+                int(command),
+                int(current),
+                int(autocontinue),
+                float(param1),
+                float(param2),
+                float(param3),
+                float(param4),
+                int(round(float(lat) * 1e7)),
+                int(round(float(lon) * 1e7)),
+                float(alt_m),
+            ]
+            with self.lock:
+                try:
+                    master.mav.mission_item_int_send(
+                        *args, mavutil.mavlink.MAV_MISSION_TYPE_MISSION
+                    )
+                except TypeError:
+                    master.mav.mission_item_int_send(*args)
+            return True
+        except Exception:
+            return False
+
     def mission_set_current(self, seq: int):
         master = self.with_master()
         if master is None:
