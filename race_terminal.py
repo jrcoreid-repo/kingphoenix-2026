@@ -80,6 +80,10 @@ def _wait_operator_start(runtime):
 def main():
     runtime = KingphoenixRuntime(enable_gcs=False)
 
+    # Terminal race has no Windows GCS dependency. Wi-Fi is therefore not a
+    # critical flight-readiness requirement; FC/GPS/LiDAR/cameras/Hailo remain.
+    runtime.readiness.cfg["require_wlan1"] = False
+
     def shutdown(*_):
         runtime.stop()
 
@@ -94,7 +98,15 @@ def main():
 
         print("[RACE] START REQUESTED")
         runtime.events.publish("START_MISSION", {"strategy": "FC"})
-        runtime.wait()
+
+        # Stay in one terminal and terminate cleanly when the race controller
+        # reaches a terminal mission state.
+        while not runtime.stop_event.is_set():
+            status = str(runtime.state.mission.status or "").upper()
+            if status in {"COMPLETE", "ERROR", "ABORTED"}:
+                print(f"[RACE] FINAL STATUS: {status}")
+                break
+            time.sleep(0.2)
         return 0
     except KeyboardInterrupt:
         return 130
