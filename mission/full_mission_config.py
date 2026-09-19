@@ -42,11 +42,11 @@ def validate_full_mission_config(cfg: dict) -> None:
         raise FullMissionConfigError("mission.final_wp must equal total_waypoints")
     if _finite("mission.auto_wp_timeout_s", mission.get("auto_wp_timeout_s", 60.0)) < 5.0:
         raise FullMissionConfigError("mission.auto_wp_timeout_s must be >=5.0")
-    if str(mission.get("abort_mode", "LOITER")).upper() not in {
-        "LOITER", "ALT_HOLD", "BRAKE"
+    if str(mission.get("abort_mode", "RTL")).upper() not in {
+        "RTL", "LOITER", "ALT_HOLD", "BRAKE"
     }:
         raise FullMissionConfigError(
-            "mission.abort_mode must be LOITER, ALT_HOLD, or BRAKE"
+            "mission.abort_mode must be RTL, LOITER, ALT_HOLD, or BRAKE"
         )
 
     preflight = cfg.get("preflight") or {}
