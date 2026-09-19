@@ -95,11 +95,11 @@
     "destination_ip": "127.0.0.1",
     "width": 640,
     "height": 400,
-    "fps": 20,
-    "front_bitrate_kbps": 2000,
-    "bottom_bitrate_kbps": 1700,
-    "keyint": 20,
-    "metadata_hz": 20,
+    "fps": 15,
+    "front_bitrate_kbps": 1000,
+    "bottom_bitrate_kbps": 800,
+    "keyint": 15,
+    "metadata_hz": 10,
     "video_transport": "MPEG-TS/H264/UDP",
     "sync": "48-cell barcode exact frame_id",
     "start_on_hello": true,
@@ -112,8 +112,8 @@
       400
     ],
     "display_policy": "WIDE_NATIVE",
-    "profile": "FIELD_LIGHT_20FPS",
-    "note_geometry": "Native 640x400 downlink retained; V2.3 reduces frame rate and bitrate before sacrificing operator resolution."
+    "profile": "FIELD_LONG_RANGE_15FPS",
+    "note_geometry": "Long-range field downlink: 640x400 at 15fps, reduced H264 bitrate. Camera capture and Hailo inference remain independent of downlink rate."
   },
   "camera": {
     "backend": "picamera2",
