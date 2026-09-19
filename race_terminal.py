@@ -8,6 +8,7 @@ import time
 from config import load_json
 from core.runtime import KingphoenixRuntime
 from mission.fc_mission_sync import MissionSyncError
+from pymavlink import mavutil
 
 
 class RaceAbort(RuntimeError):
@@ -87,15 +88,124 @@ class TerminalRace:
             time.sleep(0.25)
         raise RaceAbort("operator abort during preflight")
 
+    def ensure_terminal_land(self, actual):
+        """Ensure final WP is SEQ17 and append/repair SEQ18 as NAV_LAND."""
+        m = self.cfg["mission"]
+        final_wp_seq = int(m.get("final_wp_seq", 17))
+        land_seq = int(m.get("land_seq", 18))
+
+        if self.v.armed:
+            raise RuntimeError("mission rewrite blocked: vehicle ARMED")
+        if final_wp_seq >= len(actual):
+            raise RuntimeError(
+                f"FC mission missing final waypoint SEQ{final_wp_seq}; items={len(actual)}"
+            )
+        if len(actual) > land_seq + 1:
+            raise RuntimeError(
+                f"FC mission has items beyond SEQ{land_seq}; refusing automatic rewrite"
+            )
+
+        final_item = dict(actual[final_wp_seq])
+        changed = False
+
+        # Legacy mission may still have LAND at SEQ17. Convert it back to a
+        # normal final waypoint at the exact same coordinate.
+        if int(final_item["command"]) == int(mavutil.mavlink.MAV_CMD_NAV_LAND):
+            final_item["command"] = int(mavutil.mavlink.MAV_CMD_NAV_WAYPOINT)
+            final_item["param1"] = 0.0
+            final_item["param2"] = float(
+                self.runtime.full_cfg["waypoint"].get("acceptance_radius_m", 0.50)
+            )
+            final_item["param3"] = 0.0
+            final_item["param4"] = float("nan")
+            final_item["autocontinue"] = 1
+            actual[final_wp_seq] = final_item
+            changed = True
+            print(
+                f"[MISSION] SEQ{final_wp_seq} legacy LAND -> converted to final WAYPOINT"
+            )
+
+        land_item = {
+            "seq": land_seq,
+            "command": int(mavutil.mavlink.MAV_CMD_NAV_LAND),
+            "frame": int(final_item["frame"]),
+            "current": 0,
+            "autocontinue": 1,
+            "param1": 0.0,
+            "param2": 0.0,
+            "param3": 0.0,
+            "param4": float("nan"),
+            "lat": float(final_item["lat"]),
+            "lon": float(final_item["lon"]),
+            "alt_m": 0.0,
+        }
+
+        if len(actual) == land_seq:
+            actual.append(land_item)
+            changed = True
+            print(
+                f"[MISSION] append SEQ{land_seq}=LAND at SEQ{final_wp_seq} coordinate"
+            )
+        elif len(actual) == land_seq + 1:
+            got = actual[land_seq]
+            same_land = (
+                int(got["command"]) == int(mavutil.mavlink.MAV_CMD_NAV_LAND)
+                and abs(float(got["lat"]) - float(land_item["lat"])) <= 1e-7
+                and abs(float(got["lon"]) - float(land_item["lon"])) <= 1e-7
+            )
+            if not same_land:
+                actual[land_seq] = land_item
+                changed = True
+                print(
+                    f"[MISSION] repair SEQ{land_seq} -> LAND at SEQ{final_wp_seq} coordinate"
+                )
+        else:
+            raise RuntimeError(
+                f"FC mission count={len(actual)} cannot create SEQ{land_seq} safely"
+            )
+
+        if changed:
+            self.runtime.fc_sync.upload_exact(actual)
+            verify = self.runtime.fc_sync.download()
+            if len(verify) != land_seq + 1:
+                raise RuntimeError(
+                    f"mission verify failed: expected {land_seq + 1} items, got {len(verify)}"
+                )
+            if int(verify[final_wp_seq]["command"]) != int(
+                mavutil.mavlink.MAV_CMD_NAV_WAYPOINT
+            ):
+                raise RuntimeError(
+                    f"mission verify failed: SEQ{final_wp_seq} is not WAYPOINT"
+                )
+            if int(verify[land_seq]["command"]) != int(
+                mavutil.mavlink.MAV_CMD_NAV_LAND
+            ):
+                raise RuntimeError(
+                    f"mission verify failed: SEQ{land_seq} is not LAND"
+                )
+            print(
+                f"[MISSION] VERIFIED | SEQ{final_wp_seq}=WAYPOINT | "
+                f"SEQ{land_seq}=LAND"
+            )
+            return verify
+
+        print(
+            f"[MISSION] terminal LAND already valid | "
+            f"SEQ{final_wp_seq}=WAYPOINT | SEQ{land_seq}=LAND"
+        )
+        return actual
+
     def read_fc_mission(self):
         m = self.cfg["mission"]
         actual = self.runtime.fc_sync.download()
+        actual = self.ensure_terminal_land(actual)
         required = {
             "START": int(m["start_seq"]),
             "AI": int(m["vision_enable_seq"]),
             "DROP": int(m["drop_seq"]),
             "FALLBACK": int(m["fallback_start_seq"]),
             "RESUME": int(m["resume_seq"]),
+            "FINAL_WP": int(m["final_wp_seq"]),
             "LAND": int(m["land_seq"]),
         }
         count = len(actual)
