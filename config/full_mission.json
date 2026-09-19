@@ -15,7 +15,7 @@
     "taper_zone_m": 0.1,
     "handoff_m": 0.25,
     "tolerance_m": 0.05,
-    "kick_alt_m": 3,
+    "kick_alt_m": 1,
     "ceiling_m": 0.8,
     "zero_flush_s": 0.15,
     "timeout_s": 15,
@@ -60,7 +60,7 @@
     "servo_default_state": "OPEN",
     "servo_drop_state": "OPEN",
     "auto_close_after_drop": false,
-    "force_drop_after_fuzzy_s": 8.0
+    "force_drop_after_fuzzy_s": 8
   },
   "servo": {
     "channels": [
