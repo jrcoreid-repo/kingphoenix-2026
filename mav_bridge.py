@@ -17,8 +17,11 @@ from config import load_json
 class FastMavBridge:
     """Minimal raw MAVLink router for race runtime."""
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, mode: str = "race"):
         self.cfg = cfg
+        self.mode = str(mode).lower()
+        if self.mode not in {"race", "setup"}:
+            raise ValueError(f"unsupported bridge mode: {self.mode}")
         self.stop = False
         self.serial = None
         self.selector = selectors.DefaultSelector()
@@ -108,10 +111,12 @@ class FastMavBridge:
             f"{self.runner_sock.getsockname()[1]} -> "
             f"{self.runner_addr[0]}:{self.runner_addr[1]}"
         )
+        uplink_policy = "RTCM_ONLY" if self.mode == "race" else "FULL_ACCESS"
         print(
             f" MP      : UDP {self.mp_sock.getsockname()[1]} | "
-            "uplink policy=RTCM_ONLY"
+            f"uplink policy={uplink_policy}"
         )
+        print(f" MODE    : {self.mode.upper()}")
         print(" Priority: FC -> RUNNER -> MP")
         print("============================================================")
 
@@ -205,6 +210,12 @@ class FastMavBridge:
             self.mp_peer = peer
             print(f"[MP] peer learned {peer[0]}:{peer[1]}")
 
+        if self.mode == "setup":
+            # Full Mission Planner access for bench/setup only.
+            self._serial_write(data)
+            self.stats["mp_allowed"] += 1
+            return
+
         filtered = self._filter_mp_uplink(data)
         if filtered:
             self._serial_write(filtered)
@@ -220,9 +231,10 @@ class FastMavBridge:
             if self.mp_peer is not None
             else "WAIT"
         )
+        uplink_label = "MP_UP" if self.mode == "setup" else "RTCM"
         print(
-            f"[BRIDGE] FC={fc_kbps:.1f}kbps | MP={peer} | "
-            f"RTCM={self.stats['mp_allowed']} | "
+            f"[BRIDGE:{self.mode.upper()}] FC={fc_kbps:.1f}kbps | MP={peer} | "
+            f"{uplink_label}={self.stats['mp_allowed']} | "
             f"MP_BLOCKED={self.stats['mp_blocked']}"
         )
         for key in self.stats:
@@ -254,9 +266,16 @@ def main():
         default="mav_bridge.json",
         help="config filename inside config/ (default: mav_bridge.json)",
     )
+    parser.add_argument(
+        "--mode",
+        choices=("race", "setup"),
+        default=None,
+        help="race=MP monitor+RTK only, setup=full MP uplink",
+    )
     args = parser.parse_args()
     cfg = load_json(args.config)
-    FastMavBridge(cfg).run()
+    mode = args.mode or str(cfg.get("default_mode", "race")).lower()
+    FastMavBridge(cfg, mode=mode).run()
     return 0
 
 
