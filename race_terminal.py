@@ -362,6 +362,8 @@ class TerminalRace:
                 max_duration_s=max_duration_s,
             )
         except FuzzyDropError as exc:
+            if self.abort_event.is_set():
+                raise RaceAbort("operator abort during fuzzy fallback") from exc
             centered = False
             self.log(f"[WARN] fuzzy fallback stopped: {exc}")
         finally:
