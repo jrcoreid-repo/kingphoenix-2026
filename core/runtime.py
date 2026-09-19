@@ -39,11 +39,13 @@ class KingphoenixRuntime:
         enable_mission_manager=True,
         enable_runtime_logger=True,
         enable_safety_manager=True,
+        enable_readiness=True,
     ):
         self.enable_gcs = bool(enable_gcs)
         self.enable_mission_manager = bool(enable_mission_manager)
         self.enable_runtime_logger = bool(enable_runtime_logger)
         self.enable_safety_manager = bool(enable_safety_manager)
+        self.enable_readiness = bool(enable_readiness)
         self.cfg = load_json("system.json")
         self.full_cfg = load_full_mission_config()
 
@@ -173,8 +175,10 @@ class KingphoenixRuntime:
         # only because at 2 Hz it floods the field console and hides mission
         # events, AI transitions, servo ACKs and safety messages.
         self.workers = [
-            self.rx, self.stream_config, self.health, self.readiness,
+            self.rx, self.stream_config, self.health,
         ]
+        if self.enable_readiness:
+            self.workers.append(self.readiness)
         if self.safety is not None:
             self.workers.insert(2, self.safety)
         if self.enable_runtime_logger:
