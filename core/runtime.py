@@ -41,6 +41,7 @@ class KingphoenixRuntime:
         enable_safety_manager=True,
         enable_readiness=True,
         enable_servo_initialize=True,
+        enable_vision_stream=True,
     ):
         self.enable_gcs = bool(enable_gcs)
         self.enable_mission_manager = bool(enable_mission_manager)
@@ -48,6 +49,7 @@ class KingphoenixRuntime:
         self.enable_safety_manager = bool(enable_safety_manager)
         self.enable_readiness = bool(enable_readiness)
         self.enable_servo_initialize = bool(enable_servo_initialize)
+        self.enable_vision_stream = bool(enable_vision_stream)
         self.cfg = load_json("system.json")
         self.full_cfg = load_full_mission_config()
 
@@ -202,10 +204,12 @@ class KingphoenixRuntime:
         for worker in self.workers:
             worker.start()
 
-        # Both cameras start immediately and stay warm independently of GCS.
-        # AI is explicitly OFF until the WP6 drop-arming event.
-        self.vision_stream.start()
-        self.vision_stream.disable_ai(source="FULL_MISSION_STARTUP")
+        # Legacy/full-mission vision remains the default. Race terminal can
+        # disable it and consume the standalone vision daemon instead, avoiding
+        # camera/Hailo ownership conflicts between processes.
+        if self.enable_vision_stream:
+            self.vision_stream.start()
+            self.vision_stream.disable_ai(source="FULL_MISSION_STARTUP")
         with self.state.lock:
             self.state.system["startup_state"] = "SELF_TEST"
 
@@ -213,13 +217,14 @@ class KingphoenixRuntime:
         while not self.state.vehicle.connected and time.monotonic() < deadline:
             time.sleep(0.05)
 
-        vision_deadline = time.monotonic() + 3.0
-        while time.monotonic() < vision_deadline:
-            front = self.state.get_vision_snapshot("front")
-            bottom = self.state.get_vision_snapshot("bottom")
-            if bool(front.get("camera_open")) and bool(bottom.get("camera_open")):
-                break
-            time.sleep(0.05)
+        if self.enable_vision_stream:
+            vision_deadline = time.monotonic() + 3.0
+            while time.monotonic() < vision_deadline:
+                front = self.state.get_vision_snapshot("front")
+                bottom = self.state.get_vision_snapshot("bottom")
+                if bool(front.get("camera_open")) and bool(bottom.get("camera_open")):
+                    break
+                time.sleep(0.05)
 
         if self.enable_servo_initialize:
             ok, message = self.servo.initialize()
@@ -248,5 +253,6 @@ class KingphoenixRuntime:
                 worker.join(timeout=1.0)
         if self.enable_mission_manager and self.mission.is_alive():
             self.mission.join(timeout=1.0)
-        self.vision_stream.join(timeout=1.0)
+        if self.enable_vision_stream:
+            self.vision_stream.join(timeout=1.0)
         self.connection.close()
