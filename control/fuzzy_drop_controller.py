@@ -131,7 +131,20 @@ class FuzzyDropController:
             else:
                 outside_since = None
 
-            b = self.state.get_vision_snapshot("bottom", max_age_s=freshness)
+            # Vision source may be the legacy SharedState-backed runtime or the
+            # standalone VisionDaemonClient used by the race runner.
+            if hasattr(self.vision, "snapshot"):
+                b = dict(self.vision.snapshot() or {})
+                age_ms = b.get("result_age_ms")
+                b["usable"] = bool(
+                    b.get("link_ok")
+                    and b.get("usable")
+                    and age_ms is not None
+                    and float(age_ms) <= freshness * 1000.0
+                )
+            else:
+                b = self.state.get_vision_snapshot("bottom", max_age_s=freshness)
+
             frame_id = b.get("frame_id")
             conf = b.get("confidence")
             ex = b.get("ex")
