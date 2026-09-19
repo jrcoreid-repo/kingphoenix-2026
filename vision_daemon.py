@@ -165,6 +165,7 @@ class DropVisionDaemon:
         self.last_display_s = 0.0
         self.publish_count = 0
         self.control_count = 0
+        self.last_event = "BOOT"
 
     def _signal_stop(self, *_):
         self.stop = True
@@ -252,7 +253,9 @@ class DropVisionDaemon:
             self.last_camera_retry = 0.0
             self.last_hailo_retry = 0.0
 
-        print(f"[VISION] mode {old} -> {mode} | source={self.mode_source}")
+        self.last_event = f"MODE {old} -> {mode} | {self.mode_source}"
+        if not self.use_ansi:
+            print(f"[VISION] {self.last_event}")
         return True, f"{old}->{mode}"
 
     def control_reply(self, peer, *, ok, command, detail=""):
@@ -579,6 +582,7 @@ class DropVisionDaemon:
                 f" IPC TX : {self.publish_count} packets | "
                 f"CTRL RX: {self.control_count}"
             ),
+            f" EVENT  : {self.last_event}",
             f" ERROR  : {self.last_error or '-'}",
             "============================================================",
             " Ctrl+C to stop",
@@ -592,7 +596,9 @@ class DropVisionDaemon:
         self.last_display_s = now
         text = self.dashboard()
         if self.use_ansi:
-            sys.stdout.write("\033[2J\033[H" + text + "\n")
+            # Redraw in place: home cursor, render fixed dashboard, then erase
+            # anything left below it. This avoids endless SSH/PuTTY scrolling.
+            sys.stdout.write("\033[H" + text + "\033[J")
             sys.stdout.flush()
         else:
             print(
@@ -616,12 +622,18 @@ class DropVisionDaemon:
 
     def run(self):
         self.install_signals()
-        print("[VISION] starting standalone bottom-camera drop daemon")
-        print("[VISION] no MAVLink / servo / mission authority")
-        print(
-            f"[VISION] default={self.mode} | "
+        self.last_event = (
+            f"START default={self.mode} | "
             f"control={self.control_addr[0]}:{self.control_addr[1]}"
         )
+        if self.use_ansi:
+            # Hide cursor and clear once. Subsequent frames redraw in place.
+            sys.stdout.write("\033[?25l\033[2J\033[H")
+            sys.stdout.flush()
+        else:
+            print("[VISION] starting standalone bottom-camera drop daemon")
+            print("[VISION] no MAVLink / servo / mission authority")
+            print(f"[VISION] {self.last_event}")
 
         try:
             while not self.stop:
@@ -647,7 +659,11 @@ class DropVisionDaemon:
                 self.display_if_due()
         finally:
             self.close()
-            print("\n[VISION] daemon stopped")
+            if self.use_ansi:
+                # Always restore the user's terminal cursor on exit.
+                sys.stdout.write("\033[?25h\n")
+                sys.stdout.flush()
+            print("[VISION] daemon stopped")
 
 
 def main():
