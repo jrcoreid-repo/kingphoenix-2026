@@ -20,5 +20,6 @@
       "GPS_INJECT_DATA"
     ]
   },
-  "stats_interval_s": 5.0
+  "stats_interval_s": 5,
+  "default_mode": "race"
 }
