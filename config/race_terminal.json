@@ -40,5 +40,9 @@
     "control_port": 14601,
     "stale_s": 0.3,
     "rate_window_s": 1.5
+  },
+  "display": {
+    "refresh_hz": 5,
+    "ansi": true
   }
 }
