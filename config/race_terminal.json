@@ -21,7 +21,8 @@
   "preflight": {
     "heartbeat_max_age_s": 2.5,
     "gps_min_fix_type": 5,
-    "lidar_max_age_s": 0.6
+    "lidar_max_age_s": 0.1,
+    "lidar_min_rate_hz": 15
   },
   "landing": {
     "lidar_touchdown_m": 0.2,
@@ -71,10 +72,12 @@
     "lidar_stale_s": 0.6
   },
   "freshness_monitor": {
-    "lidar_max_age_s": 0.2,
-    "gps_max_age_s": 0.5,
+    "lidar_max_age_s": 0.1,
+    "lidar_warn_below_hz": 30,
+    "lidar_fail_below_hz": 15,
+    "gps_max_age_s": 1,
     "heartbeat_max_age_s": 2.5,
     "mission_max_age_s": 1,
-    "global_position_max_age_s": 0.3
+    "global_position_max_age_s": 0.5
   }
 }
