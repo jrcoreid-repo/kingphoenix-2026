@@ -212,20 +212,69 @@ class TerminalRace:
 
         self.close_payload()
 
-        print("[TAKEOFF] Kingphoenix LiDAR takeoff")
-        self.runtime.takeoff.run()
+        # Race takeoff is intentionally minimal:
+        # GUIDED -> ARM -> NAV_TAKEOFF(1m) -> LiDAR >= trigger -> AUTO SEQ3.
+        # No profiled velocity handoff, taper, or hard LiDAR ceiling.
+        tcfg = self.runtime.full_cfg["takeoff"]
+        trigger_m = float(tcfg["target_alt_m"]) - float(tcfg["tolerance_m"])
+        kick_alt_m = float(tcfg.get("kick_alt_m", 1.0))
+        stale_s = float(tcfg.get("lidar_stale_s", 0.60))
+        timeout_s = float(tcfg.get("timeout_s", 15.0))
+        arm_settle_s = float(tcfg.get("arm_settle_s", 0.35))
 
-        if self.abort_requested:
-            raise RaceAbort("operator abort after takeoff")
+        print(
+            f"[TAKEOFF] SIMPLE | kick={kick_alt_m:.2f}m | "
+            f"AUTO trigger LiDAR>={trigger_m:.2f}m"
+        )
+
+        result = self.runtime.command.set_mode("GUIDED")
+        if not result.ok:
+            raise RuntimeError(f"GUIDED failed: {result.reason}")
+
+        if not self.v.armed:
+            result = self.runtime.command.arm()
+            if not result.ok:
+                raise RuntimeError(f"ARM failed: {result.reason}")
+
+        settle_end = time.monotonic() + arm_settle_s
+        while time.monotonic() < settle_end:
+            if self.abort_requested:
+                raise RaceAbort("operator abort during arm settle")
+            time.sleep(0.02)
+
+        if not self.runtime.tx.takeoff(kick_alt_m):
+            raise RuntimeError("NAV_TAKEOFF TX failed")
 
         start_seq = int(self.cfg["mission"]["start_seq"])
-        self.runtime.fc_sync.set_current(start_seq)
-        result = self.runtime.command.set_mode("AUTO")
-        if not result.ok:
-            raise RuntimeError(f"AUTO failed: {result.reason}")
+        deadline = time.monotonic() + timeout_s
 
-        self.started = True
-        print(f"[MISSION] AUTO START -> SEQ{start_seq}")
+        while time.monotonic() < deadline:
+            if self.abort_requested:
+                raise RaceAbort("operator abort during takeoff")
+            if not self.v.connected or self.v.heartbeat_age_s() > 2.5:
+                raise RuntimeError("FC heartbeat lost during takeoff")
+            if str(self.v.mode or "").upper() != "GUIDED":
+                raise RaceAbort(
+                    f"pilot/mode takeover during takeoff: {self.v.mode}"
+                )
+
+            if self.v.rangefinder_is_fresh(stale_s):
+                lidar = float(self.v.rangefinder_distance_m)
+                if lidar >= trigger_m:
+                    print(
+                        f"[TAKEOFF] LiDAR={lidar:.2f}m -> AUTO SEQ{start_seq}"
+                    )
+                    self.runtime.fc_sync.set_current(start_seq)
+                    result = self.runtime.command.set_mode("AUTO")
+                    if not result.ok:
+                        raise RuntimeError(f"AUTO failed: {result.reason}")
+                    self.started = True
+                    print(f"[MISSION] AUTO START -> SEQ{start_seq}")
+                    return
+
+            time.sleep(0.01)
+
+        raise RuntimeError("takeoff timeout before LiDAR AUTO trigger")
 
     def handle_land_touchdown(self):
         """Confirm physical touchdown with LiDAR before switching LAND -> ALT_HOLD."""
