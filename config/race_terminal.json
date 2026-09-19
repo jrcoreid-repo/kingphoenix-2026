@@ -1,0 +1,26 @@
+{
+  "mission": {
+    "start_seq": 3,
+    "vision_enable_seq": 8,
+    "drop_seq": 9,
+    "fallback_start_seq": 10,
+    "fallback_servo_open_seq": 11,
+    "fallback_servo_restore_seq": 12,
+    "resume_seq": 13,
+    "land_seq": 17
+  },
+  "vision": {
+    "confidence_threshold": 0.25,
+    "confirm_frames": 2,
+    "freshness_s": 0.2,
+    "coarse_center_error_max": 0.35
+  },
+  "drop": {
+    "post_release_settle_s": 0.25
+  },
+  "preflight": {
+    "heartbeat_max_age_s": 2.5,
+    "gps_min_fix_type": 5,
+    "lidar_max_age_s": 0.6
+  }
+}
