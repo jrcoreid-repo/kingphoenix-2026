@@ -208,6 +208,20 @@ def check_force_drop_path():
     assert command.land_calls == 1
 
 
+def check_abort_rtl_contract():
+    cfg = load_full_mission_config()
+    assert str(cfg["mission"]["abort_mode"]).upper() == "RTL"
+
+    m, state, command, fc, vision, servo, takeoff, fuzzy = build_manager(False)
+    state.vehicle.armed = True
+    state.vehicle.mode = "AUTO"
+    m._abort_now("TEST_ABORT")
+    assert m.abort_event.is_set()
+    assert state.mission.abort_reason == "TEST_ABORT"
+    assert command.modes[-1] == "RTL"
+    assert "GLOBAL_ABORT" in vision.disabled
+
+
 def check_setup_ai_contract():
     cfg = load_full_mission_config()
     setup = cfg["setup_ai"]
@@ -275,9 +289,10 @@ def main():
     check_visual_drop_path()
     check_fuzzy_fallback_path()
     check_force_drop_path()
+    check_abort_rtl_contract()
     check_setup_ai_contract()
     check_mission_compare_contract()
-    print("[LOGIC-CHECK] visual-drop + fuzzy-center + force-drop + setup-ai + mission-compare PASS")
+    print("[LOGIC-CHECK] visual-drop + fuzzy-center + force-drop + abort-RTL + setup-ai + mission-compare PASS")
     return 0
 
 
