@@ -31,6 +31,7 @@ class TerminalRace:
         self.drop_confirm = 0
         self.drop_last_frame = None
         self.last_seq = None
+        self.touchdown_confirmed = False
 
     @property
     def v(self):
@@ -189,6 +190,9 @@ class TerminalRace:
 
     def safe_rtl(self, reason):
         self.disable_ai(reason)
+        if self.touchdown_confirmed:
+            print(f"[SAFETY] {reason} after touchdown -> no RTL command")
+            return
         if not self.v.armed:
             return
         print(f"[SAFETY] {reason} -> RTL")
@@ -223,6 +227,80 @@ class TerminalRace:
         self.started = True
         print(f"[MISSION] AUTO START -> SEQ{start_seq}")
 
+    def handle_land_touchdown(self):
+        """Confirm physical touchdown with LiDAR before switching LAND -> ALT_HOLD."""
+        c = dict(self.cfg.get("landing") or {})
+        threshold_m = float(c.get("lidar_touchdown_m", 0.20))
+        confirm_s = float(c.get("confirm_s", 0.8))
+        lidar_max_age_s = float(c.get("lidar_max_age_s", 0.30))
+        max_groundspeed_mps = float(c.get("max_groundspeed_mps", 0.30))
+        target_mode = str(c.get("post_touchdown_mode", "ALT_HOLD")).upper()
+
+        print(
+            f"[LAND] LAND active | waiting LiDAR <= {threshold_m:.2f}m "
+            f"for {confirm_s:.1f}s"
+        )
+
+        low_since = None
+        while self.v.armed:
+            if self.abort_requested:
+                raise RaceAbort("operator Ctrl+C during LAND")
+
+            if not self.v.connected or self.v.heartbeat_age_s() > 2.5:
+                raise RuntimeError("FC heartbeat lost during LAND")
+
+            mode = str(self.v.mode or "").upper()
+            if mode != "LAND":
+                print(f"[LAND] mode changed to {mode} before touchdown confirmation")
+                return False
+
+            lidar_ok = self.v.rangefinder_is_fresh(lidar_max_age_s)
+            lidar = self.v.rangefinder_distance_m
+            gs = self.v.groundspeed_mps
+            speed_ok = gs is None or abs(float(gs)) <= max_groundspeed_mps
+
+            low = bool(
+                lidar_ok
+                and lidar is not None
+                and 0.0 < float(lidar) <= threshold_m
+                and speed_ok
+            )
+
+            now = time.monotonic()
+            if low:
+                if low_since is None:
+                    low_since = now
+                if now - low_since >= confirm_s:
+                    self.touchdown_confirmed = True
+                    print(
+                        f"[LAND] TOUCHDOWN CONFIRMED | LiDAR={float(lidar):.2f}m | "
+                        f"GS={float(gs or 0.0):.2f}m/s"
+                    )
+                    result = self.runtime.command.set_mode(target_mode)
+                    if not result.ok:
+                        raise RuntimeError(
+                            f"{target_mode} after touchdown failed: {result.reason}"
+                        )
+                    print(
+                        f"[LAND] {target_mode} ACTIVE | waiting MANUAL DISARM"
+                    )
+
+                    while self.v.armed:
+                        if self.abort_requested:
+                            print("[LAND] Ctrl+C after touchdown -> exit without RTL")
+                            return True
+                        time.sleep(0.05)
+
+                    print("[MISSION] COMPLETE | vehicle DISARMED")
+                    return True
+            else:
+                low_since = None
+
+            time.sleep(0.02)
+
+        print("[MISSION] COMPLETE | vehicle auto-DISARMED in LAND")
+        return True
+
     def run_auto(self):
         m = self.cfg["mission"]
         ai_seq = int(m["vision_enable_seq"])
@@ -243,6 +321,11 @@ class TerminalRace:
                 print(f"[MISSION] SEQ{self.last_seq}")
 
             mode = str(self.v.mode or "").upper()
+
+            if self.started and self.v.armed and mode == "LAND":
+                if self.handle_land_touchdown():
+                    return
+                mode = str(self.v.mode or "").upper()
 
             if self.started and self.v.armed and mode not in {"AUTO", "LAND", "RTL"}:
                 self.disable_ai("PILOT_TAKEOVER")
