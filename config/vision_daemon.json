@@ -4,7 +4,7 @@
   "confidence_threshold": 0.25,
   "coarse_center_error_max": 0.35,
   "fine_center_error_max": 0.05,
-  "retry_s": 2.0,
+  "retry_s": 2,
   "infer_reset_after_errors": 3,
   "ipc": {
     "host": "127.0.0.1",
@@ -14,5 +14,10 @@
   "display": {
     "refresh_hz": 4,
     "ansi": true
+  },
+  "default_mode": "STANDBY",
+  "control": {
+    "bind_ip": "127.0.0.1",
+    "port": 14601
   }
 }
