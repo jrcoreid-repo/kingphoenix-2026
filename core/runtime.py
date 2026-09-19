@@ -32,7 +32,8 @@ from system.runtime_logger import RuntimeLogger
 
 
 class KingphoenixRuntime:
-    def __init__(self):
+    def __init__(self, *, enable_gcs=True):
+        self.enable_gcs = bool(enable_gcs)
         self.cfg = load_json("system.json")
         self.full_cfg = load_full_mission_config()
 
@@ -124,10 +125,12 @@ class KingphoenixRuntime:
         )
 
         self.safety = SafetyManager(self.state, self.events, self.stop_event)
-        self.gcs = GcsServer(
-            self.state, self.events, self.waypoints, self.stop_event,
-            command_manager=self.command, servo_controller=self.servo,
-        )
+        self.gcs = None
+        if self.enable_gcs:
+            self.gcs = GcsServer(
+                self.state, self.events, self.waypoints, self.stop_event,
+                command_manager=self.command, servo_controller=self.servo,
+            )
 
         self.mp_gateway = None
         if bool(mp_cfg.get("enabled", False)):
@@ -158,9 +161,11 @@ class KingphoenixRuntime:
         # only because at 2 Hz it floods the field console and hides mission
         # events, AI transitions, servo ACKs and safety messages.
         self.workers = [
-            self.rx, self.stream_config, self.safety, self.gcs, self.health,
+            self.rx, self.stream_config, self.safety, self.health,
             self.readiness, self.runtime_logger,
         ]
+        if self.gcs is not None:
+            self.workers.insert(3, self.gcs)
         if bool(logging_cfg.get("print_vehicle_state_table", False)):
             self.workers.insert(-2, self.vehicle_monitor)
         if self.mp_gateway is not None:
