@@ -8,6 +8,7 @@ import time
 from config import load_json
 from core.runtime import KingphoenixRuntime
 from mission.fc_mission_sync import MissionSyncError
+from vision.daemon_client import VisionDaemonClient
 
 
 class RaceAbort(RuntimeError):
@@ -24,6 +25,16 @@ class TerminalRace:
             enable_safety_manager=False,
             enable_readiness=False,
             enable_servo_initialize=False,
+            enable_vision_stream=False,
+        )
+        vdcfg = dict(self.cfg.get("vision_daemon", {}) or {})
+        self.vision = VisionDaemonClient(
+            data_bind_ip=vdcfg.get("data_bind_ip", "127.0.0.1"),
+            data_port=vdcfg.get("data_port", 14600),
+            control_host=vdcfg.get("control_host", "127.0.0.1"),
+            control_port=vdcfg.get("control_port", 14601),
+            stale_s=vdcfg.get("stale_s", 0.30),
+            rate_window_s=vdcfg.get("rate_window_s", 1.5),
         )
         self.abort_requested = False
         self.started = False
@@ -50,8 +61,7 @@ class TerminalRace:
 
     def _preflight_snapshot(self):
         p = self.cfg["preflight"]
-        bottom = self.runtime.state.get_vision_snapshot("bottom")
-        hailo = self.runtime.vision_stream.shared_ai
+        vision = self.vision.snapshot()
         lidar_age = self.v.rangefinder_age_s()
         checks = {
             "FC": bool(self.v.connected)
@@ -61,8 +71,9 @@ class TerminalRace:
             "LIDAR": self.v.rangefinder_distance_m is not None
             and float(self.v.rangefinder_distance_m) > 0.0
             and lidar_age <= float(p["lidar_max_age_s"]),
-            "BOTTOM_CAM": bool(bottom.get("camera_open")),
-            "HAILO": hailo is not None and bool(getattr(hailo, "ready", False)),
+            "VISION_LINK": bool(vision.get("link_ok")),
+            "BOTTOM_CAM": bool(vision.get("camera_ready")),
+            "HAILO": bool(vision.get("hailo_ready")),
         }
         return checks
 
@@ -86,6 +97,7 @@ class TerminalRace:
                 print(f"[PREFLIGHT] {states}")
                 last = signature
             if all(checks.values()):
+                print(self.vision_link_line(prefix="[VISION-LINK]"))
                 return
             time.sleep(0.25)
         raise RaceAbort("operator abort during preflight")
@@ -122,38 +134,55 @@ class TerminalRace:
         )
         return actual
 
+    def vision_link_line(self, prefix="[VISION]"):
+        snap = self.vision.snapshot()
+        age = snap.get("rx_age_ms")
+        age_text = "-" if age is None else f"{float(age):.0f}ms"
+        return (
+            f"{prefix} "
+            f"{'OK' if snap.get('link_ok') else 'STALE'} | "
+            f"RX={float(snap.get('rx_rate_hz') or 0.0):.1f} pkt/s | "
+            f"AGE={age_text} | "
+            f"RX#={int(snap.get('rx_count') or 0)} | "
+            f"MODE={snap.get('mode', '-')} | "
+            f"FRAME={snap.get('frame_id', '-')} | "
+            f"AI={float(snap.get('model_fps') or 0.0):.1f} fps"
+        )
+
     def activate_ai(self):
         if self.ai_active or self.drop_done:
             return
-        vcfg = self.runtime.full_cfg["vision"]
-        self.runtime.vision_stream.set_ai_route(
-            "bottom",
-            model_mode=str(vcfg.get("model_mode", "YOLO26_ONLY")),
-            task=str(vcfg.get("task", "DROP_ALIGNMENT")),
-            detector_class_id=int(vcfg.get("detector_class_id", 0)),
-            source="RACE_SEQ_TRIGGER",
-        )
+        ok, reply = self.vision.set_mode("ACTIVE")
+        if not ok:
+            print(
+                f"[WARN] Vision daemon ACTIVE failed: "
+                f"{reply.get('detail', 'no reply')} | FC fallback remains available"
+            )
+            return
         self.ai_active = True
         self.drop_confirm = 0
         self.drop_last_frame = None
-        print("[VISION] BOTTOM AI ON")
+        print(self.vision_link_line(prefix="[VISION] ACTIVE"))
 
     def disable_ai(self, source):
         if not self.ai_active:
             return
-        self.runtime.vision_stream.disable_ai(source=source)
+        ok, reply = self.vision.set_mode("STANDBY")
         self.ai_active = False
-        print(f"[VISION] AI OFF | {source}")
+        if ok:
+            print(f"[VISION] STANDBY | {source}")
+        else:
+            print(
+                f"[WARN] Vision daemon STANDBY failed: "
+                f"{reply.get('detail', 'no reply')} | {source}"
+            )
 
     def vision_drop_once(self):
         if not self.ai_active or self.drop_done:
             return False
 
         c = self.cfg["vision"]
-        snap = self.runtime.state.get_vision_snapshot(
-            "bottom",
-            max_age_s=float(c["freshness_s"]),
-        )
+        snap = self.vision.snapshot()
         frame_id = snap.get("frame_id")
         if frame_id is None or frame_id == self.drop_last_frame:
             return False
@@ -162,8 +191,12 @@ class TerminalRace:
         conf = snap.get("confidence")
         ex = snap.get("ex")
         ey = snap.get("ey")
+        result_age_ms = snap.get("result_age_ms")
         valid = bool(
-            snap.get("usable")
+            snap.get("link_ok")
+            and snap.get("usable")
+            and result_age_ms is not None
+            and float(result_age_ms) <= float(c["freshness_s"]) * 1000.0
             and conf is not None
             and float(conf) >= float(c["confidence_threshold"])
             and ex is not None
@@ -400,7 +433,7 @@ class TerminalRace:
             seq = self.v.current_mission_item
             if seq is not None and seq != self.last_seq:
                 self.last_seq = int(seq)
-                print(f"[MISSION] SEQ{self.last_seq}")
+                print(f"[MISSION] SEQ{self.last_seq} | " + self.vision_link_line(prefix="VISION"))
 
             final_seq = int(m["final_seq"])
             if (
@@ -492,6 +525,11 @@ class TerminalRace:
             return 1
 
         finally:
+            try:
+                self.vision.set_mode("STANDBY", timeout_s=0.10)
+            except Exception:
+                pass
+            self.vision.close()
             self.runtime.stop()
 
 
