@@ -6,7 +6,7 @@
     "drop_wp": 7,
     "final_wp": 11,
     "auto_wp_timeout_s": 60,
-    "abort_mode": "LOITER"
+    "abort_mode": "RTL"
   },
   "takeoff": {
     "target_alt_m": 0.5,
