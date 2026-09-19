@@ -35,6 +35,7 @@ class TerminalRace:
         self.touchdown_confirmed = False
         self.landing_commanded = False
         self.final_reached = False
+        self.last_land_force_ts = 0.0
 
     @property
     def v(self):
@@ -409,15 +410,24 @@ class TerminalRace:
                 and self.final_reached
             ):
                 self.disable_ai("FINAL_POINT")
-                print(
-                    f"[LAND] REACHED SEQ{final_seq} -> AUTO to LAND"
-                )
-                result = self.runtime.command.set_mode("LAND")
-                if not result.ok:
-                    raise RuntimeError(f"LAND failed: {result.reason}")
                 self.landing_commanded = True
+                print(
+                    f"[LAND] REACHED SEQ{final_seq} -> LAND LATCH ACTIVE"
+                )
 
             mode = str(self.v.mode or "").upper()
+
+            if self.started and self.v.armed and self.landing_commanded:
+                if mode != "LAND":
+                    now = time.monotonic()
+                    if now - self.last_land_force_ts >= 0.5:
+                        self.last_land_force_ts = now
+                        print(f"[LAND] latch force {mode} -> LAND")
+                        result = self.runtime.command.set_mode("LAND")
+                        if not result.ok:
+                            print(f"[WARN] LAND reassert failed: {result.reason}")
+                    time.sleep(0.02)
+                    continue
 
             if self.started and self.v.armed and mode == "LAND":
                 if self.handle_land_touchdown():
