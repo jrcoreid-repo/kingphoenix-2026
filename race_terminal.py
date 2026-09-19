@@ -11,6 +11,7 @@ from config import load_json
 from control.fuzzy_drop_controller import FuzzyDropController, FuzzyDropError
 from core.runtime import KingphoenixRuntime
 from mission.fc_mission_sync import MissionSyncError
+from safety.pilot_takeover import PilotTakeover
 from vision.daemon_client import VisionDaemonClient
 
 
@@ -372,7 +373,10 @@ class TerminalRace:
 
         if not centered:
             self.fuzzy_result = "FAILED"
-            self.disable_ai("FUZZY_FAILED")
+            try:
+                self.vision.set_mode("STANDBY", timeout_s=0.10)
+            except Exception:
+                pass
             self.phase = "AUTO"
             self.status_detail = "fuzzy fallback failed; handing back to FC fallback"
             return False
@@ -383,7 +387,10 @@ class TerminalRace:
 
         self.drop_done = True
         self.fuzzy_result = "SUCCESS"
-        self.disable_ai("FUZZY_DROP_COMPLETE")
+        try:
+            self.vision.set_mode("STANDBY", timeout_s=0.10)
+        except Exception:
+            pass
         self.log(f"[FUZZY] CENTERED -> DROP | {message}")
         return True
 
@@ -794,6 +801,12 @@ class TerminalRace:
             self.read_fc_mission()
             self.start_flight()
             self.run_auto()
+            return 0
+
+        except PilotTakeover as exc:
+            self.phase = "PILOT"
+            self.status_detail = str(exc)
+            self.log(f"[PILOT] {exc} | Pi autonomous intervention stopped")
             return 0
 
         except RaceAbort as exc:
