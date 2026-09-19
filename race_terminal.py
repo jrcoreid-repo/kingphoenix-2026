@@ -4,6 +4,7 @@ from __future__ import annotations
 import signal
 import sys
 import time
+from collections import deque
 
 from config import load_json
 from core.runtime import KingphoenixRuntime
@@ -48,6 +49,16 @@ class TerminalRace:
         self.final_reached = False
         self.last_land_force_ts = 0.0
 
+        display_cfg = dict(self.cfg.get("display", {}) or {})
+        self.display_hz = max(1.0, float(display_cfg.get("refresh_hz", 5.0)))
+        self.use_ansi = bool(display_cfg.get("ansi", True)) and sys.stdout.isatty()
+        self.last_display_s = 0.0
+        self.phase = "BOOT"
+        self.status_detail = "starting runtime"
+        self.event_log = deque(maxlen=5)
+        self.mission_count = None
+        self.mission_required = {}
+
     @property
     def v(self):
         return self.runtime.state.vehicle
@@ -77,27 +88,135 @@ class TerminalRace:
         }
         return checks
 
+    @staticmethod
+    def _fmt(value, digits=2, fallback="-"):
+        if value is None:
+            return fallback
+        try:
+            return f"{float(value):.{digits}f}"
+        except Exception:
+            return str(value)
+
+    def log(self, message=""):
+        text = str(message)
+        if text:
+            self.event_log.append(text)
+        self.status_detail = text or self.status_detail
+        self.display_if_due(force=True)
+
+    def dashboard(self):
+        vision = self.vision.snapshot()
+        lidar = self.v.rangefinder_distance_m
+        lidar_age = self.v.rangefinder_age_s()
+        seq = self.v.current_mission_item
+        mode = str(self.v.mode or "-").upper()
+        gps_fix = self.v.gps_fix_type
+        hb_age = self.v.heartbeat_age_s()
+
+        vision_age = vision.get("rx_age_ms")
+        vision_age_text = "-" if vision_age is None else f"{float(vision_age):.0f} ms"
+        lidar_text = "-" if lidar is None else f"{float(lidar):.2f} m"
+        lidar_age_text = "-" if lidar is None else f"{float(lidar_age) * 1000.0:.0f} ms"
+        seq_text = "-" if seq is None else str(int(seq))
+        final_seq = self.cfg.get("mission", {}).get("final_seq", "-")
+
+        conf = vision.get("confidence")
+        ex = vision.get("ex")
+        ey = vision.get("ey")
+        target = "YES" if vision.get("target_detected") else "NO"
+        vision_link = "OK" if vision.get("link_ok") else "STALE"
+
+        drop_state = "DONE" if self.drop_done else ("AI ACTIVE" if self.ai_active else "WAIT")
+        land_state = (
+            "TOUCHDOWN"
+            if self.touchdown_confirmed
+            else ("LAND CMD" if self.landing_commanded else "WAIT")
+        )
+
+        lines = [
+            "======================================================================",
+            " KINGPHOENIX AR-1 | RACE RUNNER",
+            "======================================================================",
+            (
+                f" PHASE  : {self.phase:<12} | FC: {'OK' if self.v.connected else 'WAIT':<4} "
+                f"| MODE: {mode:<9} | ARMED: {'YES' if self.v.armed else 'NO'}"
+            ),
+            (
+                f" NAV    : GPS FIX={gps_fix if gps_fix is not None else '-'} | "
+                f"LiDAR={lidar_text:<8} AGE={lidar_age_text:<7} | HB={hb_age:.2f}s"
+            ),
+            (
+                f" MISSION: SEQ={seq_text:<3} / FINAL={final_seq} | "
+                f"ITEMS={self.mission_count if self.mission_count is not None else '-'} "
+                f"| DROP={drop_state:<9} | LAND={land_state}"
+            ),
+            "----------------------------------------------------------------------",
+            (
+                f" VISION : LINK={vision_link:<5} | RX={float(vision.get('rx_rate_hz') or 0.0):5.1f} pkt/s "
+                f"| AGE={vision_age_text:<7} | RX#={int(vision.get('rx_count') or 0)}"
+            ),
+            (
+                f" AI     : MODE={str(vision.get('mode', '-')):<8} | "
+                f"FPS={float(vision.get('model_fps') or 0.0):5.1f} | "
+                f"FRAME={str(vision.get('frame_id', '-')):<8} | TARGET={target}"
+            ),
+            (
+                f" TARGET : CONF={self._fmt(conf, 2):>5} | "
+                f"ex={self._fmt(ex, 3):>7} | ey={self._fmt(ey, 3):>7} | "
+                f"CONFIRM={self.drop_confirm}"
+            ),
+            "----------------------------------------------------------------------",
+            f" STATUS : {self.status_detail or '-'}",
+            " EVENTS :",
+        ]
+        events = list(self.event_log)
+        if not events:
+            events = ["-"]
+        lines.extend(f"   {line}" for line in events[-5:])
+        lines.extend([
+            "======================================================================",
+            " Ctrl+C = abort / safety handling",
+        ])
+        return "\n".join(lines)
+
+    def display_if_due(self, force=False):
+        now = time.monotonic()
+        if not force and now - self.last_display_s < 1.0 / self.display_hz:
+            return
+        self.last_display_s = now
+        text = self.dashboard()
+        if self.use_ansi:
+            sys.stdout.write("\033[2J\033[H" + text + "\n")
+            sys.stdout.flush()
+        elif force:
+            sys.stdout.write(text + "\n")
+            sys.stdout.flush()
+
     def wait_preflight(self):
-        print("")
-        print("============================================================")
-        print(" KINGPHOENIX 2026 - TERMINAL RACE")
-        print(" Mission Planner mission on FC = navigation authority")
-        print(" GCS / waypoint JSON / video downlink = NOT USED")
-        print("============================================================")
+        self.phase = "PREFLIGHT"
+        self.status_detail = "checking FC, GPS, LiDAR, camera, Hailo and vision link"
+        self.display_if_due(force=True)
+        self.log("")
+        self.log("============================================================")
+        self.log(" KINGPHOENIX 2026 - TERMINAL RACE")
+        self.log(" Mission Planner mission on FC = navigation authority")
+        self.log(" GCS / waypoint JSON / video downlink = NOT USED")
+        self.log("============================================================")
 
         last = None
         while not self.abort_requested:
             checks = self._preflight_snapshot()
+            self.display_if_due()
             signature = tuple(checks.items())
             if signature != last:
                 states = " | ".join(
                     f"{name}={'OK' if ok else 'WAIT'}"
                     for name, ok in checks.items()
                 )
-                print(f"[PREFLIGHT] {states}")
+                self.log(f"[PREFLIGHT] {states}")
                 last = signature
             if all(checks.values()):
-                print(self.vision_link_line(prefix="[VISION-LINK]"))
+                self.log(self.vision_link_line(prefix="[VISION-LINK]"))
                 return
             time.sleep(0.25)
         raise RaceAbort("operator abort during preflight")
@@ -114,6 +233,8 @@ class TerminalRace:
             "FINAL": int(m["final_seq"]),
         }
         count = len(actual)
+        self.mission_count = count
+        self.mission_required = dict(required)
         missing = [
             f"{name}=SEQ{seq}"
             for name, seq in required.items()
@@ -124,11 +245,11 @@ class TerminalRace:
                 f"FC mission has {count} items; missing {', '.join(missing)}"
             )
 
-        print(
+        self.log(
             f"[MISSION] FC READ OK | items={count} | "
             + " | ".join(f"{k}=SEQ{v}" for k, v in required.items())
         )
-        print(
+        self.log(
             f"[MISSION] SEQ{int(m['final_seq'])} = FINAL POINT | "
             "Pi will command LAND there; FC mission items after it are ignored"
         )
@@ -154,7 +275,7 @@ class TerminalRace:
             return
         ok, reply = self.vision.set_mode("ACTIVE")
         if not ok:
-            print(
+            self.log(
                 f"[WARN] Vision daemon ACTIVE failed: "
                 f"{reply.get('detail', 'no reply')} | FC fallback remains available"
             )
@@ -162,7 +283,7 @@ class TerminalRace:
         self.ai_active = True
         self.drop_confirm = 0
         self.drop_last_frame = None
-        print(self.vision_link_line(prefix="[VISION] ACTIVE"))
+        self.log(self.vision_link_line(prefix="[VISION] ACTIVE"))
 
     def disable_ai(self, source):
         if not self.ai_active:
@@ -170,9 +291,9 @@ class TerminalRace:
         ok, reply = self.vision.set_mode("STANDBY")
         self.ai_active = False
         if ok:
-            print(f"[VISION] STANDBY | {source}")
+            self.log(f"[VISION] STANDBY | {source}")
         else:
-            print(
+            self.log(
                 f"[WARN] Vision daemon STANDBY failed: "
                 f"{reply.get('detail', 'no reply')} | {source}"
             )
@@ -216,29 +337,36 @@ class TerminalRace:
 
         self.drop_done = True
         self.disable_ai("VISION_DROP_COMPLETE")
-        print(
+        self.log(
             f"[DROP] VISION CONFIRMED {self.drop_confirm}/{needed} | "
             f"conf={float(conf):.2f} ex={float(ex):+.3f} ey={float(ey):+.3f}"
         )
-        print(f"[SERVO] {message}")
+        self.log(f"[SERVO] {message}")
         return True
 
     def safe_rtl(self, reason):
         self.disable_ai(reason)
         if self.touchdown_confirmed:
-            print(f"[SAFETY] {reason} after touchdown -> no RTL command")
+            self.log(f"[SAFETY] {reason} after touchdown -> no RTL command")
             return
         if not self.v.armed:
             return
-        print(f"[SAFETY] {reason} -> RTL")
+        self.log(f"[SAFETY] {reason} -> RTL")
         result = self.runtime.command.set_mode("RTL")
         if not result.ok:
-            print(f"[WARN] RTL command failed: {result.reason}")
+            self.log(f"[WARN] RTL command failed: {result.reason}")
 
     def start_flight(self):
-        print("")
-        print("Press ENTER to START. Type q then ENTER to quit.")
+        self.phase = "READY"
+        self.status_detail = "preflight passed; waiting operator START"
+        self.display_if_due(force=True)
+        self.log("")
+        self.log("Press ENTER to START. Type q then ENTER to quit.")
+        self.display_if_due(force=True)
         answer = input("> ").strip().lower()
+        self.phase = "TAKEOFF"
+        self.status_detail = "operator START accepted"
+        self.display_if_due(force=True)
         if answer in {"q", "quit", "exit"}:
             raise RaceAbort("operator quit before start")
 
@@ -258,7 +386,7 @@ class TerminalRace:
         timeout_s = float(tcfg.get("timeout_s", 15.0))
         arm_settle_s = float(tcfg.get("arm_settle_s", 0.35))
 
-        print(
+        self.log(
             f"[TAKEOFF] SIMPLE | kick={kick_alt_m:.2f}m | "
             f"AUTO trigger LiDAR>={trigger_m:.2f}m"
         )
@@ -285,6 +413,7 @@ class TerminalRace:
         deadline = time.monotonic() + timeout_s
 
         while time.monotonic() < deadline:
+            self.display_if_due()
             if self.abort_requested:
                 raise RaceAbort("operator abort during takeoff")
             if not self.v.connected or self.v.heartbeat_age_s() > 2.5:
@@ -297,7 +426,7 @@ class TerminalRace:
             if self.v.rangefinder_is_fresh(stale_s):
                 lidar = float(self.v.rangefinder_distance_m)
                 if lidar >= trigger_m:
-                    print(
+                    self.log(
                         f"[TAKEOFF] LiDAR={lidar:.2f}m -> AUTO SEQ{start_seq}"
                     )
                     self.runtime.fc_sync.set_current(start_seq)
@@ -305,7 +434,9 @@ class TerminalRace:
                     if not result.ok:
                         raise RuntimeError(f"AUTO failed: {result.reason}")
                     self.started = True
-                    print(f"[MISSION] AUTO START -> SEQ{start_seq}")
+                    self.phase = "AUTO"
+                    self.status_detail = f"AUTO mission running from SEQ{start_seq}"
+                    self.log(f"[MISSION] AUTO START -> SEQ{start_seq}")
                     return
 
             time.sleep(0.01)
@@ -324,13 +455,16 @@ class TerminalRace:
             for x in c.get("post_touchdown_modes", ["ALT_HOLD", "STABILIZE"])
         ]
 
-        print(
+        self.phase = "LAND"
+        self.status_detail = "LAND active; waiting touchdown confirmation"
+        self.log(
             f"[LAND] LAND active | waiting LiDAR <= {threshold_m:.2f}m "
             f"for {confirm_s:.1f}s"
         )
 
         low_since = None
         while self.v.armed:
+            self.display_if_due()
             if self.abort_requested:
                 raise RaceAbort("operator Ctrl+C during LAND")
 
@@ -339,7 +473,7 @@ class TerminalRace:
 
             mode = str(self.v.mode or "").upper()
             if mode != "LAND":
-                print(f"[LAND] mode changed to {mode} before touchdown confirmation")
+                self.log(f"[LAND] mode changed to {mode} before touchdown confirmation")
                 return False
 
             lidar_ok = self.v.rangefinder_is_fresh(lidar_max_age_s)
@@ -360,7 +494,9 @@ class TerminalRace:
                     low_since = now
                 if now - low_since >= confirm_s:
                     self.touchdown_confirmed = True
-                    print(
+                    self.phase = "TOUCHDOWN"
+                    self.status_detail = "touchdown confirmed; waiting manual disarm"
+                    self.log(
                         f"[LAND] TOUCHDOWN CONFIRMED | LiDAR={float(lidar):.2f}m | "
                         f"GS={float(gs or 0.0):.2f}m/s"
                     )
@@ -372,7 +508,7 @@ class TerminalRace:
                             selected_mode = target_mode
                             break
                         last_reason = result.reason
-                        print(
+                        self.log(
                             f"[WARN] {target_mode} after touchdown failed: "
                             f"{result.reason}"
                         )
@@ -380,24 +516,24 @@ class TerminalRace:
                         raise RuntimeError(
                             f"post-touchdown mode switch failed: {last_reason}"
                         )
-                    print(
+                    self.log(
                         f"[LAND] {selected_mode} ACTIVE | waiting MANUAL DISARM"
                     )
 
                     while self.v.armed:
                         if self.abort_requested:
-                            print("[LAND] Ctrl+C after touchdown -> exit without RTL")
+                            self.log("[LAND] Ctrl+C after touchdown -> exit without RTL")
                             return True
                         time.sleep(0.05)
 
-                    print("[MISSION] COMPLETE | vehicle DISARMED")
+                    self.log("[MISSION] COMPLETE | vehicle DISARMED")
                     return True
             else:
                 low_since = None
 
             time.sleep(0.02)
 
-        print("[MISSION] COMPLETE | vehicle auto-DISARMED in LAND")
+        self.log("[MISSION] COMPLETE | vehicle auto-DISARMED in LAND")
         return True
 
     def poll_runtime_events(self):
@@ -410,7 +546,7 @@ class TerminalRace:
             payload = event.payload or {}
             if name == "MISSION_ITEM_REACHED":
                 seq = int(payload.get("seq", -1))
-                print(f"[MISSION] REACHED SEQ{seq}")
+                self.log(f"[MISSION] REACHED SEQ{seq}")
                 if seq == int(self.cfg["mission"]["final_seq"]):
                     self.final_reached = True
 
@@ -421,7 +557,10 @@ class TerminalRace:
         resume_seq = int(m["resume_seq"])
         settle_s = float(self.cfg["drop"].get("post_release_settle_s", 0.25))
 
+        self.phase = "AUTO"
+        self.status_detail = "race mission active"
         while True:
+            self.display_if_due()
             if self.abort_requested:
                 raise RaceAbort("operator Ctrl+C")
 
@@ -433,7 +572,7 @@ class TerminalRace:
             seq = self.v.current_mission_item
             if seq is not None and seq != self.last_seq:
                 self.last_seq = int(seq)
-                print(f"[MISSION] SEQ{self.last_seq} | " + self.vision_link_line(prefix="VISION"))
+                self.log(f"[MISSION] SEQ{self.last_seq} | " + self.vision_link_line(prefix="VISION"))
 
             final_seq = int(m["final_seq"])
             if (
@@ -444,7 +583,9 @@ class TerminalRace:
             ):
                 self.disable_ai("FINAL_POINT")
                 self.landing_commanded = True
-                print(
+                self.phase = "LAND"
+                self.status_detail = f"final SEQ{final_seq} reached; LAND latch active"
+                self.log(
                     f"[LAND] REACHED SEQ{final_seq} -> LAND LATCH ACTIVE"
                 )
 
@@ -455,10 +596,10 @@ class TerminalRace:
                     now = time.monotonic()
                     if now - self.last_land_force_ts >= 0.5:
                         self.last_land_force_ts = now
-                        print(f"[LAND] latch force {mode} -> LAND")
+                        self.log(f"[LAND] latch force {mode} -> LAND")
                         result = self.runtime.command.set_mode("LAND")
                         if not result.ok:
-                            print(f"[WARN] LAND reassert failed: {result.reason}")
+                            self.log(f"[WARN] LAND reassert failed: {result.reason}")
                     time.sleep(0.02)
                     continue
 
@@ -469,7 +610,7 @@ class TerminalRace:
 
             if self.started and self.v.armed and mode not in {"AUTO", "LAND", "RTL"}:
                 self.disable_ai("PILOT_TAKEOVER")
-                print(f"[PILOT] FC mode changed to {mode}; Pi stops autonomous intervention")
+                self.log(f"[PILOT] FC mode changed to {mode}; Pi stops autonomous intervention")
                 return
 
             if seq is not None and int(seq) >= ai_seq and int(seq) < fallback_seq:
@@ -480,11 +621,11 @@ class TerminalRace:
                     time.sleep(settle_s)
                 try:
                     self.runtime.fc_sync.set_current(resume_seq)
-                    print(
+                    self.log(
                         f"[DROP] SUCCESS -> SKIP FC FALLBACK -> SEQ{resume_seq}"
                     )
                 except MissionSyncError as exc:
-                    print(
+                    self.log(
                         f"[WARN] drop released but skip failed: {exc} | "
                         "FC fallback remains available"
                     )
@@ -495,11 +636,11 @@ class TerminalRace:
                 and int(seq) >= fallback_seq
             ):
                 self.disable_ai("FC_FALLBACK")
-                print("[DROP] Vision not released -> FC fallback block owns drop")
+                self.log("[DROP] Vision not released -> FC fallback block owns drop")
                 self.drop_done = True
 
             if self.started and not self.v.armed:
-                print("[MISSION] COMPLETE | vehicle DISARMED")
+                self.log("[MISSION] COMPLETE | vehicle DISARMED")
                 return
 
             time.sleep(0.01)
@@ -508,6 +649,9 @@ class TerminalRace:
         self.install_signals()
         try:
             self.runtime.start()
+            self.phase = "PREFLIGHT"
+            self.status_detail = "runtime started"
+            self.display_if_due(force=True)
             self.wait_preflight()
             self.read_fc_mission()
             self.start_flight()
@@ -515,12 +659,16 @@ class TerminalRace:
             return 0
 
         except RaceAbort as exc:
-            print(f"[RACE] ABORT | {exc}")
+            self.phase = "ABORT"
+            self.status_detail = str(exc)
+            self.log(f"[RACE] ABORT | {exc}")
             self.safe_rtl("OPERATOR_ABORT")
             return 130
 
         except Exception as exc:
-            print(f"[ERROR] {type(exc).__name__}: {exc}")
+            self.phase = "ERROR"
+            self.status_detail = f"{type(exc).__name__}: {exc}"
+            self.log(f"[ERROR] {type(exc).__name__}: {exc}")
             self.safe_rtl("RACE_ERROR")
             return 1
 
