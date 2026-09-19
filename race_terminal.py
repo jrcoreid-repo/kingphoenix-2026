@@ -34,6 +34,7 @@ class TerminalRace:
         self.last_seq = None
         self.touchdown_confirmed = False
         self.landing_commanded = False
+        self.final_reached = False
 
     @property
     def v(self):
@@ -365,6 +366,20 @@ class TerminalRace:
         print("[MISSION] COMPLETE | vehicle auto-DISARMED in LAND")
         return True
 
+    def poll_runtime_events(self):
+        """Consume lightweight FC events; standalone race owns this event bus."""
+        while True:
+            event = self.runtime.events.get(timeout=0.0)
+            if event is None:
+                return
+            name = str(event.name)
+            payload = event.payload or {}
+            if name == "MISSION_ITEM_REACHED":
+                seq = int(payload.get("seq", -1))
+                print(f"[MISSION] REACHED SEQ{seq}")
+                if seq == int(self.cfg["mission"]["final_seq"]):
+                    self.final_reached = True
+
     def run_auto(self):
         m = self.cfg["mission"]
         ai_seq = int(m["vision_enable_seq"])
@@ -379,6 +394,8 @@ class TerminalRace:
             if not self.v.connected or self.v.heartbeat_age_s() > 2.5:
                 raise RuntimeError("FC heartbeat lost")
 
+            self.poll_runtime_events()
+
             seq = self.v.current_mission_item
             if seq is not None and seq != self.last_seq:
                 self.last_seq = int(seq)
@@ -389,12 +406,11 @@ class TerminalRace:
                 self.started
                 and self.v.armed
                 and not self.landing_commanded
-                and seq is not None
-                and int(seq) >= final_seq
+                and self.final_reached
             ):
                 self.disable_ai("FINAL_POINT")
                 print(
-                    f"[LAND] FINAL SEQ{final_seq} reached -> AUTO to LAND"
+                    f"[LAND] REACHED SEQ{final_seq} -> AUTO to LAND"
                 )
                 result = self.runtime.command.set_mode("LAND")
                 if not result.ok:
