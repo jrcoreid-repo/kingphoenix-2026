@@ -7,8 +7,7 @@
     "fallback_servo_open_seq": 11,
     "fallback_servo_restore_seq": 12,
     "resume_seq": 13,
-    "land_seq": 18,
-    "final_wp_seq": 17
+    "final_seq": 16
   },
   "vision": {
     "confidence_threshold": 0.25,
