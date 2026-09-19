@@ -32,5 +32,13 @@
       "ALT_HOLD",
       "STABILIZE"
     ]
+  },
+  "vision_daemon": {
+    "data_bind_ip": "127.0.0.1",
+    "data_port": 14600,
+    "control_host": "127.0.0.1",
+    "control_port": 14601,
+    "stale_s": 0.3,
+    "rate_window_s": 1.5
   }
 }
