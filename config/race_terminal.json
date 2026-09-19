@@ -28,6 +28,9 @@
     "confirm_s": 0.8,
     "lidar_max_age_s": 0.3,
     "max_groundspeed_mps": 0.3,
-    "post_touchdown_mode": "ALT_HOLD"
+    "post_touchdown_modes": [
+      "ALT_HOLD",
+      "STABILIZE"
+    ]
   }
 }
