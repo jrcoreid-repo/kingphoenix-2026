@@ -1,10 +1,15 @@
 {
   "mission": {
-    "name": "KINGPHOENIX_FULL_RACE",
-    "total_waypoints": 11,
-    "ai_enable_wp": 6,
-    "drop_wp": 7,
-    "final_wp": 11,
+    "name": "KINGPHOENIX_FC_PRELOADED_RACE",
+    "source": "FC_PRELOADED",
+    "start_seq": 3,
+    "vision_enable_seq": 8,
+    "drop_seq": 9,
+    "fallback_start_seq": 10,
+    "fallback_servo_open_seq": 11,
+    "fallback_servo_restore_seq": 12,
+    "resume_seq": 13,
+    "land_seq": 17,
     "auto_wp_timeout_s": 60,
     "abort_mode": "RTL"
   },
@@ -60,7 +65,9 @@
     "servo_default_state": "OPEN",
     "servo_drop_state": "OPEN",
     "auto_close_after_drop": false,
-    "force_drop_after_fuzzy_s": 8.0
+    "force_drop_after_fuzzy_s": 8,
+    "post_release_settle_s": 0.25,
+    "fallback_owner": "FC_MISSION"
   },
   "servo": {
     "channels": [
@@ -75,7 +82,7 @@
     "require_closed_before_start": true
   },
   "guided_fuzzy": {
-    "enabled": true,
+    "enabled": false,
     "control_hz": 20,
     "confidence_threshold": 0.25,
     "vision_freshness_s": 0.2,
@@ -121,8 +128,8 @@
     "preload_ai_model": true
   },
   "landing": {
-    "land_after_final_wp": true,
-    "final_wp_number": 11,
+    "land_after_final_wp": false,
+    "final_wp_number": 17,
     "timeout_s": 45
   },
   "logging": {
