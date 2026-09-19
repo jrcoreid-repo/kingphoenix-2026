@@ -32,8 +32,18 @@ from system.runtime_logger import RuntimeLogger
 
 
 class KingphoenixRuntime:
-    def __init__(self, *, enable_gcs=True):
+    def __init__(
+        self,
+        *,
+        enable_gcs=True,
+        enable_mission_manager=True,
+        enable_runtime_logger=True,
+        enable_safety_manager=True,
+    ):
         self.enable_gcs = bool(enable_gcs)
+        self.enable_mission_manager = bool(enable_mission_manager)
+        self.enable_runtime_logger = bool(enable_runtime_logger)
+        self.enable_safety_manager = bool(enable_safety_manager)
         self.cfg = load_json("system.json")
         self.full_cfg = load_full_mission_config()
 
@@ -124,7 +134,9 @@ class KingphoenixRuntime:
             self.full_cfg, self.stop_event,
         )
 
-        self.safety = SafetyManager(self.state, self.events, self.stop_event)
+        self.safety = None
+        if self.enable_safety_manager:
+            self.safety = SafetyManager(self.state, self.events, self.stop_event)
         self.gcs = None
         if self.enable_gcs:
             self.gcs = GcsServer(
@@ -161,9 +173,12 @@ class KingphoenixRuntime:
         # only because at 2 Hz it floods the field console and hides mission
         # events, AI transitions, servo ACKs and safety messages.
         self.workers = [
-            self.rx, self.stream_config, self.safety, self.health,
-            self.readiness, self.runtime_logger,
+            self.rx, self.stream_config, self.health, self.readiness,
         ]
+        if self.safety is not None:
+            self.workers.insert(2, self.safety)
+        if self.enable_runtime_logger:
+            self.workers.append(self.runtime_logger)
         if self.gcs is not None:
             self.workers.insert(3, self.gcs)
         if bool(logging_cfg.get("print_vehicle_state_table", False)):
@@ -203,7 +218,8 @@ class KingphoenixRuntime:
         ok, message = self.servo.initialize()
         print(("[SERVO] " if ok else "[WARN] ") + message)
 
-        self.mission.start()
+        if self.enable_mission_manager:
+            self.mission.start()
         with self.state.lock:
             self.state.system["startup_state"] = "READY_FOR_OPERATOR"
 
@@ -223,7 +239,7 @@ class KingphoenixRuntime:
         for worker in self.workers:
             if hasattr(worker, "join"):
                 worker.join(timeout=1.0)
-        if self.mission.is_alive():
+        if self.enable_mission_manager and self.mission.is_alive():
             self.mission.join(timeout=1.0)
         self.vision_stream.join(timeout=1.0)
         self.connection.close()
