@@ -1,0 +1,18 @@
+{
+  "model_mode": "YOLO26_ONLY",
+  "detector_class_id": 0,
+  "confidence_threshold": 0.25,
+  "coarse_center_error_max": 0.35,
+  "fine_center_error_max": 0.05,
+  "retry_s": 2.0,
+  "infer_reset_after_errors": 3,
+  "ipc": {
+    "host": "127.0.0.1",
+    "port": 14600,
+    "publish_hz": 20
+  },
+  "display": {
+    "refresh_hz": 4,
+    "ansi": true
+  }
+}
