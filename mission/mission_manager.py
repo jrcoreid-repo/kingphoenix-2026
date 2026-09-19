@@ -59,18 +59,15 @@ class MissionManager(threading.Thread):
     def _startup_report(self):
         m = self.cfg["mission"]; t = self.cfg["takeoff"]; w = self.cfg["waypoint"]
         v = self.cfg["vision"]; f = self.cfg["guided_fuzzy"]; d = self.cfg["drop"]
-        fc_preloaded = str(m.get("source", "")).upper() == "FC_PRELOADED"
         print("============================================================")
         print(" KINGPHOENIX 2026 - FULL RACE RUNTIME")
         print("============================================================")
         print(
-            f"[PLAN] source={'FC_PRELOADED' if fc_preloaded else 'JSON_SYNC'} | "
-            f"TO={t['target_alt_m']:.2f}m@{t['fast_vz_mps']:.2f}m/s | "
-            f"START=SEQ{int(m.get('start_seq', 1))} | AI=SEQ{int(m.get('vision_enable_seq', m.get('ai_enable_wp', 6)))} | "
-            f"DROP=SEQ{int(m.get('drop_seq', m.get('drop_wp', 7)))} | "
+            f"[PLAN] WP={m['total_waypoints']} | TO={t['target_alt_m']:.2f}m@{t['fast_vz_mps']:.2f}m/s | "
+            f"WPalt={w['default_alt_m']:.2f}m | AI@WP{m['ai_enable_wp']} | DROP@WP{m['drop_wp']} | "
             f"YOLO={v['confidence_threshold']:.2f}/{v['confirm_frames']}F | "
-            f"SUCCESS_SKIP=SEQ{int(m.get('resume_seq', 8))} | "
-            f"LAND=SEQ{int(m.get('land_seq', m.get('final_wp', 11)))}"
+            f"FUZZY_FORCE_DROP={float(d.get('force_drop_after_fuzzy_s', 8.0)):.1f}s | "
+            f"FINAL={w['final_wp_alt_m']:.2f}m"
         )
         print("[PLAN] AUTO speed/accel/cornering: FC PARAMETERS (NO Pi override)")
         mav_ok = self.state.vehicle.connected and self.state.vehicle.heartbeat_age_s() <= 2.5
@@ -86,13 +83,10 @@ class MissionManager(threading.Thread):
             f"BottomCam={'OK' if bottom.get('camera_open') else 'WAIT'} | "
             f"Hailo={'OK' if hailo_ok else 'WAIT'} | Servo={servo_state}"
         )
-        if fc_preloaded:
-            print("[MISSION] FC mission is authoritative | Pi will READ only; no waypoint upload/sync")
-        else:
-            for strategy in ("LEFT", "RIGHT"):
-                ok, detail = self.waypoints.validate_strategy(strategy, int(m["total_waypoints"]))
-                print(f"[MISSION] {'PASS' if ok else 'WARN'} {strategy}: {detail}")
-        print("[STANDBY] Waiting START | live preflight gates every START")
+        for strategy in ("LEFT", "RIGHT"):
+            ok, detail = self.waypoints.validate_strategy(strategy, int(m["total_waypoints"]))
+            print(f"[MISSION] {'PASS' if ok else 'WARN'} {strategy}: {detail}")
+        print("[STANDBY] Waiting START L / START R | live preflight gates every START")
 
     def _activate_drop_ai(self):
         if self.drop_done or self.drop_armed:
@@ -102,13 +96,13 @@ class MissionManager(threading.Thread):
             "bottom", model_mode=str(cfg.get("model_mode", "YOLO26_ONLY")),
             task=str(cfg.get("task", "DROP_ALIGNMENT")),
             detector_class_id=int(cfg.get("detector_class_id", 0)),
-            source="MISSION_VISION_TRIGGER",
+            source="MISSION_WP6",
         )
         with self._drop_lock:
             self.drop_armed = True
             self.drop_confirm = 0
             self.drop_last_frame = None
-        print("[MISSION] VISION TRIGGER -> BOTTOM AI ON | DROP ARMED")
+        print("[MISSION] WP6 REACHED | BOTTOM AI ON | DROP ARMED")
 
     def _disable_ai(self, source):
         try:
@@ -214,13 +208,10 @@ class MissionManager(threading.Thread):
     def _preflight(self, strategy: str):
         if bool(self.waypoints.edit_unlocked):
             raise MissionRunError("START blocked: waypoint SETUP/EDIT mode is still unlocked")
-        mission_cfg = dict(self.cfg.get("mission") or {})
-        fc_preloaded = str(mission_cfg.get("source", "")).upper() == "FC_PRELOADED"
-        if not fc_preloaded:
-            total = int(mission_cfg["total_waypoints"])
-            ok, detail = self.waypoints.validate_strategy(strategy, total)
-            if not ok:
-                raise MissionRunError(detail)
+        total = int(self.cfg["mission"]["total_waypoints"])
+        ok, detail = self.waypoints.validate_strategy(strategy, total)
+        if not ok:
+            raise MissionRunError(detail)
         with self.state.lock:
             readiness = dict(self.state.system.get("readiness") or {})
             ready_for_mission = bool(self.state.system.get("ready_for_mission", False))
@@ -280,78 +271,6 @@ class MissionManager(threading.Thread):
             raise MissionRunError(f"AUTO failed: {result.reason}")
         print(f"[MISSION] AUTO -> WP{seq}")
 
-    def _validate_fc_preloaded_mission(self):
-        """Read/validate Mission Planner mission without modifying FC."""
-        mission_cfg = dict(self.cfg.get("mission") or {})
-        actual = self.fc_sync.download()
-        required = [
-            int(mission_cfg.get("start_seq", 3)),
-            int(mission_cfg.get("vision_enable_seq", 8)),
-            int(mission_cfg.get("drop_seq", 9)),
-            int(mission_cfg.get("resume_seq", 13)),
-            int(mission_cfg.get("land_seq", 17)),
-        ]
-        count = len(actual)
-        missing = [seq for seq in required if seq < 0 or seq >= count]
-        if missing:
-            raise MissionRunError(
-                f"FC mission missing required seq {missing}; count={count}"
-            )
-        print(
-            f"[MISSION] FC mission READ OK | items={count} | "
-            f"start={required[0]} ai={required[1]} drop={required[2]} "
-            f"resume={required[3]} land={required[4]}"
-        )
-        return actual
-
-    def _monitor_vision_until_drop_point(self, drop_seq: int, resume_seq: int):
-        """Vision success skips MP fallback block; failure leaves FC mission untouched."""
-        timeout = float(self.cfg["mission"].get("auto_wp_timeout_s", 60.0))
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.abort_event.is_set():
-                raise MissionRunError("ABORTED")
-            if str(self.state.vehicle.mode).upper() != "AUTO":
-                raise PilotTakeover(
-                    f"operator changed mode during AUTO mission to {self.state.vehicle.mode}"
-                )
-
-            if self._drop_monitor_once():
-                # Physical release happened. Give servo command a short settling
-                # window, then skip MP DELAY/DO_SET_SERVO fallback block.
-                settle = float((self.cfg.get("drop") or {}).get("post_release_settle_s", 0.25))
-                if settle > 0:
-                    time.sleep(settle)
-                try:
-                    self.fc_sync.set_current(int(resume_seq))
-                    print(
-                        f"[DROP] VISION SUCCESS -> fallback block skipped -> SEQ{int(resume_seq)}"
-                    )
-                    return "VISION"
-                except MissionSyncError as exc:
-                    # Fail-safe behavior: do not fight the FC. Its original
-                    # DELAY/DO_SET_SERVO mission remains intact.
-                    print(
-                        f"[WARN] vision drop done but skip to SEQ{int(resume_seq)} failed: {exc} | "
-                        "FC fallback mission remains active"
-                    )
-                    return "VISION_SKIP_FAILED"
-
-            with self._reached_lock:
-                if int(drop_seq) in self._reached:
-                    self._disable_ai("FC_FALLBACK_BLOCK")
-                    with self._drop_lock:
-                        self.drop_armed = False
-                    print(
-                        f"[DROP] SEQ{int(drop_seq)} reached without vision release -> "
-                        "leave FC DELAY/DO_SET_SERVO fallback untouched"
-                    )
-                    return "FC_FALLBACK"
-
-            time.sleep(0.01)
-
-        raise MissionRunError(f"AUTO timeout waiting drop SEQ{int(drop_seq)}")
-
     def _run_mission(self, strategy: str):
         strategy = str(strategy).upper()
         try:
@@ -367,54 +286,82 @@ class MissionManager(threading.Thread):
 
                 self._set_status("PREFLIGHT", strategy=strategy, abort_reason="")
                 self._stop_setup_ai("MISSION_START")
-                print("[MISSION] START | FC-PRELOADED SIMPLE RACE")
+                print(f"[MISSION] START {strategy}")
                 self._preflight(strategy)
+                self._set_status("SYNC_MISSION")
+                self.fc_sync.ensure(self.waypoints, strategy, self.cfg)
 
-                mission_cfg = dict(self.cfg.get("mission") or {})
-                fc_preloaded = str(mission_cfg.get("source", "")).upper() == "FC_PRELOADED"
-
-                if fc_preloaded:
-                    self._validate_fc_preloaded_mission()
-                else:
-                    self._set_status("SYNC_MISSION")
-                    self.fc_sync.ensure(self.waypoints, strategy, self.cfg)
-
-                # Keep the proven Kingphoenix LiDAR takeoff profile.
                 self._set_status("TAKEOFF")
                 self.takeoff.run(abort_event=self.abort_event)
 
-                start_seq = int(mission_cfg.get("start_seq", 1))
-                vision_seq = int(mission_cfg.get("vision_enable_seq", mission_cfg.get("ai_enable_wp", 6)))
-                drop_seq = int(mission_cfg.get("drop_seq", mission_cfg.get("drop_wp", 7)))
-                resume_seq = int(mission_cfg.get("resume_seq", drop_seq + 1))
-                land_seq = int(mission_cfg.get("land_seq", mission_cfg.get("final_wp", 11)))
-
                 self._set_status("AUTO")
-                self._switch_auto(start_seq)
+                self._switch_auto(1)
 
-                # FC owns all navigation. Pi waits only for the one event it
-                # needs: enable bottom vision at the configured mission seq.
-                self._wait_reached(vision_seq)
+                ai_wp = int(self.cfg["mission"]["ai_enable_wp"])
+                drop_wp = int(self.cfg["mission"]["drop_wp"])
+                final_wp = int(self.cfg["mission"]["final_wp"])
+
+                for wp in range(1, ai_wp + 1):
+                    self._wait_reached(wp)
                 self._activate_drop_ai()
-                self._monitor_vision_until_drop_point(drop_seq, resume_seq)
+                self._wait_reached(drop_wp, monitor_drop=True)
 
-                # Do not command LAND or rewrite the mission. Mission Planner's
-                # uploaded mission remains authoritative through its LAND item.
-                print(f"[MISSION] FC autonomous mission continues -> LAND SEQ{land_seq}")
-                self._set_status("AUTO")
+                if not self.drop_done:
+                    print(f"[DROP] WP{drop_wp} reached without release -> GUIDED FUZZY fallback")
+                    self._set_status("FUZZY_DROP")
+                    cfg = self.cfg["vision"]
+                    self.vision.set_ai_route(
+                        "bottom", model_mode=str(cfg.get("model_mode", "YOLO26_ONLY")),
+                        task=str(cfg.get("task", "DROP_ALIGNMENT")),
+                        detector_class_id=int(cfg.get("detector_class_id", 0)),
+                        source="FUZZY_FALLBACK",
+                    )
+                    force_drop_s = float((self.cfg.get("drop") or {}).get("force_drop_after_fuzzy_s", 8.0))
+                    centered = self.fuzzy.run(
+                        abort_event=self.abort_event,
+                        max_duration_s=force_drop_s,
+                    )
+                    source = "FUZZY_DROP" if centered else "FORCE_DROP_FALLBACK"
+                    ok, message = self.servo.open(source=source)
+                    if not ok:
+                        raise MissionRunError(message)
+                    with self._drop_lock:
+                        self.drop_done = True
+                        self.drop_armed = False
+                    if centered:
+                        print(f"[DROP] FUZZY CENTERED -> {message}")
+                    else:
+                        print(f"[DROP] FUZZY NOT CENTERED AFTER {force_drop_s:.1f}s -> FORCE RELEASE -> {message}")
+                    self._disable_ai("FUZZY_DROP_COMPLETE" if centered else "FORCE_DROP_COMPLETE")
+                    self._set_status("AUTO")
+                    self._switch_auto(drop_wp + 1)
 
-                # Wait for FC LAND/disarm. This loop is observational only.
-                land_timeout = float((self.cfg.get("landing") or {}).get("timeout_s", 45.0))
-                while not self.abort_event.is_set():
-                    if not self.state.vehicle.armed:
-                        break
-                    mode = str(self.state.vehicle.mode).upper()
-                    if mode == "LAND":
-                        self._set_status("LANDING")
-                    time.sleep(0.10)
+                for wp in range(drop_wp + 1, final_wp + 1):
+                    self._wait_reached(wp)
 
+                print(f"[MISSION] WP{final_wp} REACHED -> LAND")
                 if self.abort_event.is_set():
                     raise MissionRunError("ABORTED")
+                self._set_status("LANDING")
+                land = self.command.land()
+                if not land.ok:
+                    raise MissionRunError(f"LAND command failed: {land.reason}")
+
+                land_timeout = float((self.cfg.get("landing") or {}).get("timeout_s", 45.0))
+                deadline = time.monotonic() + land_timeout
+                while self.state.vehicle.armed and time.monotonic() < deadline:
+                    if self.abort_event.is_set():
+                        raise MissionRunError("ABORTED")
+                    if str(self.state.vehicle.mode).upper() != "LAND":
+                        raise PilotTakeover(
+                            f"operator changed mode during LAND to {self.state.vehicle.mode}"
+                        )
+                    time.sleep(0.10)
+
+                if self.state.vehicle.armed:
+                    raise MissionRunError(
+                        f"LAND timeout after {land_timeout:.1f}s; vehicle still ARMED"
+                    )
 
                 self._set_status("COMPLETE")
                 print("[MISSION] COMPLETE | vehicle DISARMED")
@@ -467,9 +414,6 @@ class MissionManager(threading.Thread):
         self._safe_hold("ABORT")
 
     def sync_strategy(self, strategy: str):
-        if str((self.cfg.get("mission") or {}).get("source", "")).upper() == "FC_PRELOADED":
-            print("[MISSION] FC_PRELOADED | EXIT SETUP -> no mission upload/sync")
-            return
         strategy = str(strategy).upper()
         if self.mission_active:
             print(f"[WARN] waypoint sync {strategy} deferred: mission active")
@@ -507,14 +451,8 @@ class MissionManager(threading.Thread):
                     first = seq not in self._reached
                     self._reached.add(seq)
                 if first and seq > 0:
-                    print(f"[MISSION] SEQ{seq} REACHED")
-                vision_seq = int(
-                    self.cfg["mission"].get(
-                        "vision_enable_seq",
-                        self.cfg["mission"].get("ai_enable_wp", 6),
-                    )
-                )
-                if seq == vision_seq:
+                    print(f"[MISSION] WP{seq} REACHED")
+                if seq == int(self.cfg["mission"]["ai_enable_wp"]):
                     self._activate_drop_ai()
                 continue
 
