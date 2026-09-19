@@ -44,5 +44,30 @@
   "display": {
     "refresh_hz": 5,
     "ansi": true
+  },
+  "fuzzy_fallback": {
+    "enabled": true,
+    "max_duration_s": 8,
+    "control_hz": 20,
+    "confidence_threshold": 0.25,
+    "vision_freshness_s": 0.2,
+    "center_error": 0.12,
+    "center_confirm_frames": 2,
+    "center_offset_x": 0,
+    "center_offset_y": 0,
+    "mid_error": 0.25,
+    "far_error": 0.45,
+    "minimum_speed_mps": 0.12,
+    "mid_speed_mps": 0.3,
+    "far_speed_mps": 0.6,
+    "filter_alpha": 0.4,
+    "xy_slew_mps2": 1.5,
+    "x_sign": -1,
+    "y_sign": -1,
+    "lost_timeout_s": 0.15,
+    "guard_floor_m": 0.6,
+    "guard_ceiling_m": 1.4,
+    "guard_outside_s": 0.35,
+    "lidar_stale_s": 0.6
   }
 }
