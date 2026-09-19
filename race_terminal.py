@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import signal
 import sys
+import threading
 import time
 from collections import deque
 
 from config import load_json
+from control.fuzzy_drop_controller import FuzzyDropController, FuzzyDropError
 from core.runtime import KingphoenixRuntime
 from mission.fc_mission_sync import MissionSyncError
 from vision.daemon_client import VisionDaemonClient
@@ -38,6 +40,7 @@ class TerminalRace:
             rate_window_s=vdcfg.get("rate_window_s", 1.5),
         )
         self.abort_requested = False
+        self.abort_event = threading.Event()
         self.started = False
         self.ai_active = False
         self.drop_done = False
@@ -48,6 +51,10 @@ class TerminalRace:
         self.landing_commanded = False
         self.final_reached = False
         self.last_land_force_ts = 0.0
+        self.fuzzy = None
+        self.fuzzy_attempted = False
+        self.fuzzy_active = False
+        self.fuzzy_result = "IDLE"
 
         display_cfg = dict(self.cfg.get("display", {}) or {})
         self.display_hz = max(1.0, float(display_cfg.get("refresh_hz", 5.0)))
@@ -65,6 +72,7 @@ class TerminalRace:
 
     def _signal_abort(self, *_):
         self.abort_requested = True
+        self.abort_event.set()
 
     def install_signals(self):
         signal.signal(signal.SIGINT, self._signal_abort)
@@ -127,6 +135,7 @@ class TerminalRace:
         vision_link = "OK" if vision.get("link_ok") else "STALE"
 
         drop_state = "DONE" if self.drop_done else ("AI ACTIVE" if self.ai_active else "WAIT")
+        fuzzy_state = "ACTIVE" if self.fuzzy_active else self.fuzzy_result
         land_state = (
             "TOUCHDOWN"
             if self.touchdown_confirmed
@@ -164,6 +173,11 @@ class TerminalRace:
                 f" TARGET : CONF={self._fmt(conf, 2):>5} | "
                 f"ex={self._fmt(ex, 3):>7} | ey={self._fmt(ey, 3):>7} | "
                 f"CONFIRM={self.drop_confirm}"
+            ),
+            (
+                f" FALLBACK: FUZZY={fuzzy_state:<8} | "
+                f"ATTEMPTED={'YES' if self.fuzzy_attempted else 'NO ':<3} | "
+                f"FC BLOCK={'READY' if not self.drop_done else 'DONE'}"
             ),
             "----------------------------------------------------------------------",
             f" STATUS : {self.status_detail or '-'}",
@@ -297,6 +311,81 @@ class TerminalRace:
                 f"[WARN] Vision daemon STANDBY failed: "
                 f"{reply.get('detail', 'no reply')} | {source}"
             )
+
+    def _get_fuzzy(self):
+        if self.fuzzy is None:
+            cfg = dict(self.cfg.get("fuzzy_fallback", {}) or {})
+            self.fuzzy = FuzzyDropController(
+                self.runtime.state,
+                self.runtime.command,
+                self.runtime.tx,
+                self.vision,
+                cfg,
+                log=self.log,
+            )
+        return self.fuzzy
+
+    def run_fuzzy_fallback(self):
+        """Run one bounded fuzzy attempt; FC fallback remains the final safety net."""
+        if self.drop_done or self.fuzzy_attempted:
+            return False
+
+        cfg = dict(self.cfg.get("fuzzy_fallback", {}) or {})
+        if not bool(cfg.get("enabled", True)):
+            self.fuzzy_attempted = True
+            self.fuzzy_result = "DISABLED"
+            self.log("[FUZZY] disabled -> FC fallback")
+            return False
+
+        self.fuzzy_attempted = True
+        self.fuzzy_active = True
+        self.fuzzy_result = "ACTIVE"
+        self.phase = "FUZZY"
+        self.status_detail = "vision primary missed; fuzzy fallback aligning"
+        self.disable_ai("FUZZY_FALLBACK")
+        # Fuzzy consumes the same daemon telemetry, so reactivate perception only.
+        ok, reply = self.vision.set_mode("ACTIVE")
+        if not ok:
+            self.fuzzy_active = False
+            self.fuzzy_result = "NO VISION"
+            self.log(
+                f"[WARN] fuzzy fallback vision ACTIVE failed: "
+                f"{reply.get('detail', 'no reply')} -> FC fallback"
+            )
+            return False
+
+        max_duration_s = float(cfg.get("max_duration_s", 8.0))
+        try:
+            centered = self._get_fuzzy().run(
+                abort_event=self.abort_event,
+                max_duration_s=max_duration_s,
+            )
+        except FuzzyDropError as exc:
+            centered = False
+            self.log(f"[WARN] fuzzy fallback stopped: {exc}")
+        finally:
+            try:
+                self.runtime.tx.send_body_velocity(0.0, 0.0, 0.0)
+            except Exception:
+                pass
+            self.fuzzy_active = False
+
+        if not centered:
+            self.fuzzy_result = "FAILED"
+            self.disable_ai("FUZZY_FAILED")
+            self.phase = "AUTO"
+            self.status_detail = "fuzzy fallback failed; handing back to FC fallback"
+            return False
+
+        ok, message = self.runtime.servo.open(source="RACE_FUZZY_FALLBACK_DROP")
+        if not ok:
+            raise RuntimeError(message)
+
+        self.drop_done = True
+        self.fuzzy_result = "SUCCESS"
+        self.disable_ai("FUZZY_DROP_COMPLETE")
+        self.log(f"[FUZZY] CENTERED -> DROP | {message}")
+        return True
 
     def vision_drop_once(self):
         if not self.ai_active or self.drop_done:
@@ -634,10 +723,59 @@ class TerminalRace:
                 not self.drop_done
                 and seq is not None
                 and int(seq) >= fallback_seq
+                and not self.fuzzy_attempted
             ):
+                self.log("[DROP] primary vision missed -> fuzzy fallback")
+                fuzzy_success = self.run_fuzzy_fallback()
+
+                if fuzzy_success:
+                    if settle_s > 0:
+                        time.sleep(settle_s)
+                    try:
+                        self.runtime.fc_sync.set_current(resume_seq)
+                        result = self.runtime.command.set_mode("AUTO")
+                        if not result.ok:
+                            raise RuntimeError(f"AUTO resume failed: {result.reason}")
+                        self.phase = "AUTO"
+                        self.status_detail = f"fuzzy drop complete; resumed at SEQ{resume_seq}"
+                        self.log(f"[FUZZY] SUCCESS -> AUTO SEQ{resume_seq}")
+                    except MissionSyncError as exc:
+                        self.log(
+                            f"[WARN] fuzzy drop released but resume failed: {exc}"
+                        )
+                else:
+                    # Fuzzy already zeroed XY. Resume AUTO at the FC fallback block.
+                    try:
+                        self.runtime.fc_sync.set_current(fallback_seq)
+                        result = self.runtime.command.set_mode("AUTO")
+                        if not result.ok:
+                            raise RuntimeError(
+                                f"AUTO fallback resume failed: {result.reason}"
+                            )
+                        self.phase = "AUTO"
+                        self.status_detail = "FC fallback block owns drop"
+                        self.log(
+                            f"[FUZZY] FAILED -> AUTO FC FALLBACK SEQ{fallback_seq}"
+                        )
+                    except MissionSyncError as exc:
+                        raise RuntimeError(
+                            f"failed to hand back to FC fallback: {exc}"
+                        )
+
+            if (
+                not self.drop_done
+                and self.fuzzy_attempted
+                and not self.fuzzy_active
+                and seq is not None
+                and int(seq) > fallback_seq
+            ):
+                # Once the FC fallback block has started, Pi no longer intervenes.
                 self.disable_ai("FC_FALLBACK")
-                self.log("[DROP] Vision not released -> FC fallback block owns drop")
-                self.drop_done = True
+                self.fuzzy_result = (
+                    self.fuzzy_result
+                    if self.fuzzy_result == "SUCCESS"
+                    else "FC"
+                )
 
             if self.started and not self.v.armed:
                 self.log("[MISSION] COMPLETE | vehicle DISARMED")
