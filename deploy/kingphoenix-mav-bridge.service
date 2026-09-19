@@ -1,0 +1,16 @@
+[Unit]
+Description=Kingphoenix Fast MAVLink Race Bridge
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=jrcore-labs
+WorkingDirectory=/home/jrcore-labs/kingphoenix-2026
+ExecStart=/usr/bin/python3 /home/jrcore-labs/kingphoenix-2026/mav_bridge.py
+Restart=always
+RestartSec=1
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
