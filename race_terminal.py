@@ -124,6 +124,42 @@ class TerminalRace:
 
         vision_age = vision.get("rx_age_ms")
         vision_age_text = "-" if vision_age is None else f"{float(vision_age):.0f} ms"
+
+        fresh_cfg = dict(self.cfg.get("freshness_monitor", {}) or {})
+        def msg_health(name, max_age_s):
+            age_s = self.v.message_age_s(name)
+            rate_hz = self.v.message_rate_hz(name)
+            if age_s == float("inf"):
+                return "MISSING", rate_hz, None
+            return (
+                "FRESH" if age_s <= float(max_age_s) else "STALE",
+                rate_hz,
+                age_s * 1000.0,
+            )
+
+        lidar_msg = (
+            "RANGEFINDER"
+            if self.v.rangefinder_source == "RANGEFINDER_LEGACY"
+            else "DISTANCE_SENSOR"
+        )
+        lidar_state, lidar_hz, lidar_msg_age_ms = msg_health(
+            lidar_msg, fresh_cfg.get("lidar_max_age_s", 0.20)
+        )
+        gps_state, gps_hz, gps_age_ms = msg_health(
+            "GPS_RAW_INT", fresh_cfg.get("gps_max_age_s", 0.50)
+        )
+        hb_state, hb_hz, hb_msg_age_ms = msg_health(
+            "HEARTBEAT", fresh_cfg.get("heartbeat_max_age_s", 2.50)
+        )
+        mission_state, mission_hz, mission_age_ms = msg_health(
+            "MISSION_CURRENT", fresh_cfg.get("mission_max_age_s", 1.00)
+        )
+        gpos_state, gpos_hz, gpos_age_ms = msg_health(
+            "GLOBAL_POSITION_INT", fresh_cfg.get("global_position_max_age_s", 0.30)
+        )
+
+        def age_text(ms):
+            return "-" if ms is None else f"{ms:.0f}ms"
         lidar_text = "-" if lidar is None else f"{float(lidar):.2f} m"
         lidar_age_text = "-" if lidar is None else f"{float(lidar_age) * 1000.0:.0f} ms"
         seq_text = "-" if seq is None else str(int(seq))
@@ -152,13 +188,28 @@ class TerminalRace:
                 f"| MODE: {mode:<9} | ARMED: {'YES' if self.v.armed else 'NO'}"
             ),
             (
-                f" NAV    : GPS FIX={gps_fix if gps_fix is not None else '-'} | "
-                f"LiDAR={lidar_text:<8} AGE={lidar_age_text:<7} | HB={hb_age:.2f}s"
+                f" NAV    : GPS FIX={gps_fix if gps_fix is not None else '-'} "
+                f"SAT={self.v.gps_satellites if self.v.gps_satellites is not None else '-'} "
+                f"HDOP={self._fmt(self.v.gps_hdop, 2):>4} | "
+                f"LiDAR={lidar_text:<8} | HB={hb_age:.2f}s"
             ),
             (
                 f" MISSION: SEQ={seq_text:<3} / FINAL={final_seq} | "
                 f"ITEMS={self.mission_count if self.mission_count is not None else '-'} "
                 f"| DROP={drop_state:<9} | LAND={land_state}"
+            ),
+            "----------------------------------------------------------------------",
+            (
+                f" FRESH  : LIDAR {lidar_state:<7} {lidar_hz:5.1f}Hz {age_text(lidar_msg_age_ms):>6} | "
+                f"GPS {gps_state:<7} {gps_hz:5.1f}Hz {age_text(gps_age_ms):>6}"
+            ),
+            (
+                f" LINK   : HB {hb_state:<7} {hb_hz:5.1f}Hz {age_text(hb_msg_age_ms):>6} | "
+                f"GPOS {gpos_state:<7} {gpos_hz:5.1f}Hz {age_text(gpos_age_ms):>6}"
+            ),
+            (
+                f" MISSION: STREAM {mission_state:<7} {mission_hz:5.1f}Hz "
+                f"{age_text(mission_age_ms):>6} | SRC LiDAR={lidar_msg}"
             ),
             "----------------------------------------------------------------------",
             (
