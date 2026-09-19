@@ -13,11 +13,20 @@ from vision.camera_manager import CameraManager
 from vision.hailo_yolo26 import HailoYolo26
 
 
+VALID_MODES = {"OFF", "STANDBY", "ACTIVE"}
+
+
 class DropVisionDaemon:
     """Standalone bottom-camera + Hailo perception process.
 
-    Owns camera/Hailo only. It has no MAVLink, servo, mission, or flight-control
-    authority. Latest detection state is published over localhost UDP.
+    OFF:
+      camera closed, Hailo closed.
+    STANDBY:
+      camera open, Hailo loaded, inference paused.
+    ACTIVE:
+      camera + Hailo active, inference runs continuously.
+
+    The daemon has no MAVLink, servo, mission, or flight-control authority.
     """
 
     def __init__(self):
@@ -92,6 +101,23 @@ class DropVisionDaemon:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
 
+        control = self.cfg.get("control", {})
+        self.control_addr = (
+            str(control.get("bind_ip", "127.0.0.1")),
+            int(control.get("port", 14601)),
+        )
+        self.control_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.control_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.control_sock.bind(self.control_addr)
+        self.control_sock.setblocking(False)
+
+        default_mode = str(self.cfg.get("default_mode", "STANDBY")).upper()
+        if default_mode not in VALID_MODES:
+            raise ValueError(f"invalid default_mode={default_mode}")
+        self.mode = default_mode
+        self.mode_source = "CONFIG"
+        self.mode_changed_ns = time.monotonic_ns()
+
         display = self.cfg.get("display", {})
         self.display_hz = max(0.5, float(display.get("refresh_hz", 4.0)))
         self.use_ansi = bool(display.get("ansi", True)) and sys.stdout.isatty()
@@ -138,6 +164,7 @@ class DropVisionDaemon:
         self.last_publish_s = 0.0
         self.last_display_s = 0.0
         self.publish_count = 0
+        self.control_count = 0
 
     def _signal_stop(self, *_):
         self.stop = True
@@ -188,6 +215,110 @@ class DropVisionDaemon:
             self.last_error = f"HAILO: {type(exc).__name__}: {exc}"
             return False
 
+    def release_resources(self):
+        try:
+            self.camera.close()
+        except Exception:
+            pass
+        try:
+            self.ai.close()
+        except Exception:
+            pass
+        self.camera_ready = False
+        self.hailo_ready = False
+        self.capture_fps = 0.0
+        self.model_fps = 0.0
+        self.model_ms = 0.0
+        self.last_capture_ns = 0
+
+    def set_mode(self, mode, source="CONTROL"):
+        mode = str(mode).upper().strip()
+        if mode not in VALID_MODES:
+            return False, f"invalid mode {mode}; use OFF/STANDBY/ACTIVE"
+
+        if mode == self.mode:
+            return True, f"already {mode}"
+
+        old = self.mode
+        self.mode = mode
+        self.mode_source = str(source)
+        self.mode_changed_ns = time.monotonic_ns()
+        self.clear_detection(reset_age=True)
+
+        if mode == "OFF":
+            self.release_resources()
+        else:
+            # Allow immediate open/retry after OFF or a previous error.
+            self.last_camera_retry = 0.0
+            self.last_hailo_retry = 0.0
+
+        print(f"[VISION] mode {old} -> {mode} | source={self.mode_source}")
+        return True, f"{old}->{mode}"
+
+    def control_reply(self, peer, *, ok, command, detail=""):
+        payload = {
+            "schema": "kingphoenix.vision.control.v1",
+            "ok": bool(ok),
+            "command": command,
+            "detail": detail,
+            "mode": self.mode,
+            "camera_ready": bool(self.camera_ready),
+            "hailo_ready": bool(self.hailo_ready and self.ai.ready),
+            "error": self.last_error,
+        }
+        try:
+            self.control_sock.sendto(
+                json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                peer,
+            )
+        except OSError:
+            pass
+
+    def handle_control(self):
+        while True:
+            try:
+                data, peer = self.control_sock.recvfrom(4096)
+            except BlockingIOError:
+                return
+            except OSError as exc:
+                self.last_error = f"CONTROL: {type(exc).__name__}: {exc}"
+                return
+
+            self.control_count += 1
+            text = data.decode("utf-8", errors="replace").strip()
+            upper = text.upper()
+
+            if upper == "PING":
+                self.control_reply(peer, ok=True, command="PING", detail="PONG")
+                continue
+
+            if upper in {"GET_STATE", "STATE", "STATUS"}:
+                self.control_reply(peer, ok=True, command="GET_STATE")
+                continue
+
+            if upper in VALID_MODES:
+                ok, detail = self.set_mode(upper, source=f"UDP:{peer[0]}")
+                self.control_reply(peer, ok=ok, command=f"SET_MODE {upper}", detail=detail)
+                continue
+
+            if upper.startswith("SET_MODE "):
+                requested = upper.split(None, 1)[1].strip()
+                ok, detail = self.set_mode(requested, source=f"UDP:{peer[0]}")
+                self.control_reply(
+                    peer,
+                    ok=ok,
+                    command=f"SET_MODE {requested}",
+                    detail=detail,
+                )
+                continue
+
+            self.control_reply(
+                peer,
+                ok=False,
+                command=text or "<empty>",
+                detail="commands: PING, GET_STATE, SET_MODE OFF|STANDBY|ACTIVE",
+            )
+
     def update_capture_fps(self, timestamp_ns):
         if self.last_capture_ns:
             dt = (timestamp_ns - self.last_capture_ns) / 1e9
@@ -200,7 +331,7 @@ class DropVisionDaemon:
                 )
         self.last_capture_ns = timestamp_ns
 
-    def clear_detection(self):
+    def clear_detection(self, reset_age=False):
         self.target_detected = False
         self.confidence = None
         self.bbox = None
@@ -213,6 +344,10 @@ class DropVisionDaemon:
         self.coarse_centered = False
         self.fine_centered = False
         self.coarse_streak = 0
+        if reset_age:
+            self.last_result_ns = 0
+            self.frame_id = None
+            self.frame_timestamp_ns = 0
 
     def process_frame(self):
         try:
@@ -314,11 +449,23 @@ class DropVisionDaemon:
 
     def packet(self):
         age_ms = self.result_age_ms()
-        ready = bool(self.camera_ready and self.hailo_ready and self.ai.ready)
+        resources_ready = bool(
+            self.camera_ready and self.hailo_ready and self.ai.ready
+        )
+        active = self.mode == "ACTIVE"
         return {
             "schema": "kingphoenix.vision.drop.v1",
             "sent_monotonic_ns": time.monotonic_ns(),
-            "ready": ready,
+            "mode": self.mode,
+            "mode_source": self.mode_source,
+            "ready": resources_ready,
+            "active": active,
+            "usable": bool(
+                active
+                and resources_ready
+                and self.target_detected
+                and age_ms is not None
+            ),
             "camera_ready": bool(self.camera_ready),
             "hailo_ready": bool(self.hailo_ready and self.ai.ready),
             "model_mode": self.model_mode,
@@ -372,7 +519,13 @@ class DropVisionDaemon:
     def dashboard(self):
         age = self.result_age_ms()
         target = "DETECTED" if self.target_detected else "SEARCHING"
-        health = "READY" if self.camera_ready and self.hailo_ready else "WAIT"
+        if self.mode == "OFF":
+            health = "OFF"
+        elif self.camera_ready and self.hailo_ready:
+            health = "READY"
+        else:
+            health = "WAIT"
+
         bbox = "-"
         if self.bbox is not None and len(self.bbox) >= 4:
             bbox = (
@@ -385,13 +538,20 @@ class DropVisionDaemon:
             " KINGPHOENIX DROP VISION DAEMON",
             "============================================================",
             (
-                f" HEALTH : {health:<6} | CAMERA: "
-                f"{'READY' if self.camera_ready else 'WAIT':<5} | HAILO: "
-                f"{'READY' if self.hailo_ready else 'WAIT':<5}"
+                f" MODE   : {self.mode:<7} | HEALTH: {health:<5} | "
+                f"SOURCE: {self.mode_source}"
+            ),
+            (
+                f" CAMERA : {'READY' if self.camera_ready else 'OFF/WAIT':<8} | "
+                f"HAILO: {'READY' if self.hailo_ready else 'OFF/WAIT':<8}"
             ),
             (
                 f" MODEL  : {self.model_mode:<12} | CLASS: {self.detector_class_id} "
-                f"| IPC: {self.publish_addr[0]}:{self.publish_addr[1]}"
+                f"| DATA: {self.publish_addr[0]}:{self.publish_addr[1]}"
+            ),
+            (
+                f" CONTROL: {self.control_addr[0]}:{self.control_addr[1]} "
+                "| OFF / STANDBY / ACTIVE"
             ),
             (
                 f" FPS    : CAP {self.capture_fps:5.1f} | AI {self.model_fps:5.1f} "
@@ -415,7 +575,10 @@ class DropVisionDaemon:
             ),
             f" PHASE  : {self.control_phase}",
             "------------------------------------------------------------",
-            f" IPC TX : {self.publish_count} packets",
+            (
+                f" IPC TX : {self.publish_count} packets | "
+                f"CTRL RX: {self.control_count}"
+            ),
             f" ERROR  : {self.last_error or '-'}",
             "============================================================",
             " Ctrl+C to stop",
@@ -433,7 +596,8 @@ class DropVisionDaemon:
             sys.stdout.flush()
         else:
             print(
-                f"[VISION] CAM={'OK' if self.camera_ready else 'WAIT'} "
+                f"[VISION:{self.mode}] "
+                f"CAM={'OK' if self.camera_ready else 'WAIT'} "
                 f"HAILO={'OK' if self.hailo_ready else 'WAIT'} "
                 f"TARGET={'YES' if self.target_detected else 'NO'} "
                 f"CONF={self.fmt(self.confidence, 2)} "
@@ -443,33 +607,40 @@ class DropVisionDaemon:
             )
 
     def close(self):
-        try:
-            self.camera.close()
-        except Exception:
-            pass
-        try:
-            self.ai.close()
-        except Exception:
-            pass
-        try:
-            self.sock.close()
-        except Exception:
-            pass
+        self.release_resources()
+        for sock in (self.sock, self.control_sock):
+            try:
+                sock.close()
+            except Exception:
+                pass
 
     def run(self):
         self.install_signals()
         print("[VISION] starting standalone bottom-camera drop daemon")
         print("[VISION] no MAVLink / servo / mission authority")
+        print(
+            f"[VISION] default={self.mode} | "
+            f"control={self.control_addr[0]}:{self.control_addr[1]}"
+        )
 
         try:
             while not self.stop:
+                self.handle_control()
+
+                if self.mode == "OFF":
+                    self.publish_if_due()
+                    self.display_if_due()
+                    time.sleep(0.05)
+                    continue
+
                 camera_ok = self.ensure_camera()
                 hailo_ok = self.ensure_hailo()
 
-                if camera_ok and hailo_ok:
+                if self.mode == "ACTIVE" and camera_ok and hailo_ok:
                     self.process_frame()
                 else:
-                    self.clear_detection()
+                    # STANDBY keeps camera/Hailo warm but performs no inference.
+                    self.clear_detection(reset_age=True)
                     time.sleep(0.03)
 
                 self.publish_if_due()
