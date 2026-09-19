@@ -530,12 +530,14 @@ class GcsServer(threading.Thread):
                         f"START BLOCKED: payload servo is {servo_state}; CLOSE from SETUP first",
                     )
             strategy = self.state.mission.strategy
-            ok, detail = self.waypoints.validate_strategy(
-                strategy,
-                int(getattr(self.waypoints, "total_waypoints", 11)),
-            )
-            if not ok:
-                return ack(tx, False, f"START BLOCKED: {strategy} {detail}")
+            mission_cfg = load_json("full_mission.json").get("mission", {})
+            if str(mission_cfg.get("source", "")).upper() != "FC_PRELOADED":
+                ok, detail = self.waypoints.validate_strategy(
+                    strategy,
+                    int(getattr(self.waypoints, "total_waypoints", 11)),
+                )
+                if not ok:
+                    return ack(tx, False, f"START BLOCKED: {strategy} {detail}")
             self.events.publish(
                 "START_MISSION",
                 {"strategy": strategy},
