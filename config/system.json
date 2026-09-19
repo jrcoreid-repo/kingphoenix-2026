@@ -5,25 +5,25 @@
     "heartbeat_timeout_s": 2.5,
     "rate_retry_interval_s": 10,
     "message_rates_hz": {
-      "ATTITUDE": 30,
-      "LOCAL_POSITION_NED": 30,
-      "GLOBAL_POSITION_INT": 20,
-      "GPS_RAW_INT": 10,
-      "VFR_HUD": 10,
-      "SYS_STATUS": 5,
+      "ATTITUDE": 5,
+      "LOCAL_POSITION_NED": 5,
+      "GLOBAL_POSITION_INT": 5,
+      "GPS_RAW_INT": 5,
+      "VFR_HUD": 5,
+      "SYS_STATUS": 2,
       "MISSION_CURRENT": 5,
-      "DISTANCE_SENSOR": 20
+      "DISTANCE_SENSOR": 50
     },
     "freshness_s": {
       "HEARTBEAT": 2.5,
-      "ATTITUDE": 0.1,
-      "LOCAL_POSITION_NED": 0.15,
-      "GLOBAL_POSITION_INT": 0.3,
-      "GPS_RAW_INT": 0.5,
-      "VFR_HUD": 0.3,
-      "SYS_STATUS": 1,
+      "ATTITUDE": 0.5,
+      "LOCAL_POSITION_NED": 0.5,
+      "GLOBAL_POSITION_INT": 0.5,
+      "GPS_RAW_INT": 1,
+      "VFR_HUD": 0.5,
+      "SYS_STATUS": 2,
       "MISSION_CURRENT": 1,
-      "DISTANCE_SENSOR": 0.2
+      "DISTANCE_SENSOR": 0.1
     },
     "source_system": 1,
     "source_component": 191,
@@ -185,7 +185,7 @@
     "expected_orientation": 25,
     "expected_orientation_name": "MAV_SENSOR_ROTATION_PITCH_270",
     "preferred_for_low_altitude": true,
-    "valid_age_s": 0.2,
+    "valid_age_s": 0.1,
     "allow_legacy_fallback": true
   },
   "vision_branch": {
