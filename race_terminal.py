@@ -83,6 +83,12 @@ class TerminalRace:
         p = self.cfg["preflight"]
         vision = self.vision.snapshot()
         lidar_age = self.v.rangefinder_age_s()
+        lidar_msg = (
+            "RANGEFINDER"
+            if self.v.rangefinder_source == "RANGEFINDER_LEGACY"
+            else "DISTANCE_SENSOR"
+        )
+        lidar_rate = self.v.message_rate_hz(lidar_msg)
         checks = {
             "FC": bool(self.v.connected)
             and self.v.heartbeat_age_s() <= float(p["heartbeat_max_age_s"]),
@@ -90,7 +96,8 @@ class TerminalRace:
             and int(self.v.gps_fix_type) >= int(p["gps_min_fix_type"]),
             "LIDAR": self.v.rangefinder_distance_m is not None
             and float(self.v.rangefinder_distance_m) > 0.0
-            and lidar_age <= float(p["lidar_max_age_s"]),
+            and lidar_age <= float(p["lidar_max_age_s"])
+            and lidar_rate >= float(p.get("lidar_min_rate_hz", 0.0)),
             "VISION_LINK": bool(vision.get("link_ok")),
             "BOTTOM_CAM": bool(vision.get("camera_ready")),
             "HAILO": bool(vision.get("hailo_ready")),
@@ -143,8 +150,16 @@ class TerminalRace:
             else "DISTANCE_SENSOR"
         )
         lidar_state, lidar_hz, lidar_msg_age_ms = msg_health(
-            lidar_msg, fresh_cfg.get("lidar_max_age_s", 0.20)
+            lidar_msg, fresh_cfg.get("lidar_max_age_s", 0.10)
         )
+        lidar_warn_hz = float(fresh_cfg.get("lidar_warn_below_hz", 30.0))
+        lidar_fail_hz = float(fresh_cfg.get("lidar_fail_below_hz", 15.0))
+        if lidar_state in {"STALE", "MISSING"} or lidar_hz < lidar_fail_hz:
+            lidar_quality = "FAIL"
+        elif lidar_hz < lidar_warn_hz:
+            lidar_quality = "WARN"
+        else:
+            lidar_quality = "GOOD"
         gps_state, gps_hz, gps_age_ms = msg_health(
             "GPS_RAW_INT", fresh_cfg.get("gps_max_age_s", 0.50)
         )
@@ -200,17 +215,19 @@ class TerminalRace:
             ),
             "----------------------------------------------------------------------",
             (
-                f" FRESH  : LIDAR {lidar_state:<7} {lidar_hz:5.1f}Hz {age_text(lidar_msg_age_ms):>6} | "
-                f"GPS {gps_state:<7} {gps_hz:5.1f}Hz {age_text(gps_age_ms):>6}"
+                f" LIDAR  : {lidar_quality:<4} | {lidar_state:<7} | "
+                f"{lidar_hz:5.1f}Hz | AGE={age_text(lidar_msg_age_ms):>6} | "
+                f"DIST={lidar_text}"
             ),
             (
-                f" LINK   : HB {hb_state:<7} {hb_hz:5.1f}Hz {age_text(hb_msg_age_ms):>6} | "
-                f"GPOS {gpos_state:<7} {gpos_hz:5.1f}Hz {age_text(gpos_age_ms):>6}"
+                f" AUX    : GPS {gps_state:<7} {gps_hz:4.1f}Hz {age_text(gps_age_ms):>6} | "
+                f"HB {hb_state:<7} {hb_hz:4.1f}Hz {age_text(hb_msg_age_ms):>6}"
             ),
             (
-                f" MISSION: STREAM {mission_state:<7} {mission_hz:5.1f}Hz "
-                f"{age_text(mission_age_ms):>6} | SRC LiDAR={lidar_msg}"
+                f" AUX2   : GPOS {gpos_state:<7} {gpos_hz:4.1f}Hz {age_text(gpos_age_ms):>6} | "
+                f"MISSION {mission_state:<7} {mission_hz:4.1f}Hz {age_text(mission_age_ms):>6}"
             ),
+            f" SOURCE : LiDAR={lidar_msg} | target request=50Hz | race-critical",
             "----------------------------------------------------------------------",
             (
                 f" VISION : LINK={vision_link:<5} | RX={float(vision.get('rx_rate_hz') or 0.0):5.1f} pkt/s "
