@@ -40,12 +40,14 @@ class KingphoenixRuntime:
         enable_runtime_logger=True,
         enable_safety_manager=True,
         enable_readiness=True,
+        enable_servo_initialize=True,
     ):
         self.enable_gcs = bool(enable_gcs)
         self.enable_mission_manager = bool(enable_mission_manager)
         self.enable_runtime_logger = bool(enable_runtime_logger)
         self.enable_safety_manager = bool(enable_safety_manager)
         self.enable_readiness = bool(enable_readiness)
+        self.enable_servo_initialize = bool(enable_servo_initialize)
         self.cfg = load_json("system.json")
         self.full_cfg = load_full_mission_config()
 
@@ -219,8 +221,9 @@ class KingphoenixRuntime:
                 break
             time.sleep(0.05)
 
-        ok, message = self.servo.initialize()
-        print(("[SERVO] " if ok else "[WARN] ") + message)
+        if self.enable_servo_initialize:
+            ok, message = self.servo.initialize()
+            print(("[SERVO] " if ok else "[WARN] ") + message)
 
         if self.enable_mission_manager:
             self.mission.start()
