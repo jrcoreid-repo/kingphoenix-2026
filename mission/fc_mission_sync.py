@@ -90,6 +90,12 @@ class FCMissionSync:
             "seq": int(msg.seq),
             "command": int(msg.command),
             "frame": int(msg.frame),
+            "current": int(getattr(msg, "current", 0)),
+            "autocontinue": int(getattr(msg, "autocontinue", 1)),
+            "param1": float(getattr(msg, "param1", 0.0)),
+            "param2": float(getattr(msg, "param2", 0.0)),
+            "param3": float(getattr(msg, "param3", 0.0)),
+            "param4": float(getattr(msg, "param4", float("nan"))),
             "lat": lat,
             "lon": lon,
             "alt_m": float(msg.z),
@@ -118,6 +124,66 @@ class FCMissionSync:
                         items.append(self._decode_item(msg))
                         break
             return items
+
+    def upload_exact(self, items: list[dict]):
+        """Replace FC mission with exact decoded items plus caller-created items."""
+        timeout = float(self.cfg.get("upload_timeout_s", 12.0))
+        if self.state.vehicle.armed:
+            raise MissionSyncError("mission upload blocked while vehicle ARMED")
+        if not items:
+            raise MissionSyncError("cannot upload empty mission")
+
+        with self.lock:
+            self._drain()
+            if self.tx.mission_clear_all():
+                try:
+                    self._wait({"MISSION_ACK"}, 1.0)
+                except MissionSyncError:
+                    pass
+            self._drain()
+
+            count = len(items)
+            if not self.tx.mission_count(count):
+                raise MissionSyncError("MISSION_COUNT TX failed")
+
+            sent = set()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                msg = self._wait(
+                    {"MISSION_REQUEST_INT", "MISSION_REQUEST", "MISSION_ACK"},
+                    max(0.05, deadline - time.monotonic()),
+                )
+                t = msg.get_type()
+                if t == "MISSION_ACK":
+                    ack_type = int(getattr(msg, "type", -1))
+                    if ack_type != mavutil.mavlink.MAV_MISSION_ACCEPTED:
+                        raise MissionSyncError(f"FC mission rejected ACK={ack_type}")
+                    if len(sent) != count:
+                        continue
+                    return
+
+                seq = int(msg.seq)
+                if not 0 <= seq < count:
+                    raise MissionSyncError(f"FC requested invalid seq={seq}")
+                item = dict(items[seq])
+                if not self.tx.mission_item_int_raw(
+                    seq=seq,
+                    frame=int(item.get("frame", mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT)),
+                    command=int(item.get("command", mavutil.mavlink.MAV_CMD_NAV_WAYPOINT)),
+                    current=int(item.get("current", 0)),
+                    autocontinue=int(item.get("autocontinue", 1)),
+                    param1=float(item.get("param1", 0.0)),
+                    param2=float(item.get("param2", 0.0)),
+                    param3=float(item.get("param3", 0.0)),
+                    param4=float(item.get("param4", float("nan"))),
+                    lat=float(item.get("lat", 0.0)),
+                    lon=float(item.get("lon", 0.0)),
+                    alt_m=float(item.get("alt_m", 0.0)),
+                ):
+                    raise MissionSyncError(f"MISSION_ITEM_INT seq={seq} TX failed")
+                sent.add(seq)
+
+            raise MissionSyncError(f"exact mission upload timeout ({len(sent)}/{count})")
 
     def compare(self, route: list[dict], actual: list[dict]) -> tuple[bool, str]:
         pos_tol = float(self.cfg.get("position_tolerance_m", 0.30))
