@@ -132,6 +132,7 @@
     "realtime_summary_interval_s": 2,
     "system_summary_interval_s": 5,
     "print_raw_mavlink": false,
+    "print_vehicle_state_table": false,
     "print_every_frame": false,
     "print_every_control_loop": false
   },
