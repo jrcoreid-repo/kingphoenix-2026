@@ -148,16 +148,21 @@ class KingphoenixRuntime:
             self.state, self.stop_event, cfg=self.cfg.get("readiness", {}),
             hz=self.cfg.get("rates_hz", {}).get("readiness", 2.0),
         )
+        logging_cfg = dict(self.full_cfg.get("logging", {}) or {})
         self.runtime_logger = RuntimeLogger(
-            self.state, self.stop_event, self.full_cfg.get("logging", {})
+            self.state, self.stop_event, logging_cfg
         )
 
-        # MissionManager starts only after MAVLink, cameras, AI preload and
-        # servo startup state have had a bounded initialization window.
+        # Production full-mission uses the compact RuntimeLogger. The legacy
+        # VehicleMonitor full-screen telemetry table is opt-in for diagnostics
+        # only because at 2 Hz it floods the field console and hides mission
+        # events, AI transitions, servo ACKs and safety messages.
         self.workers = [
             self.rx, self.stream_config, self.safety, self.gcs, self.health,
-            self.vehicle_monitor, self.readiness, self.runtime_logger,
+            self.readiness, self.runtime_logger,
         ]
+        if bool(logging_cfg.get("print_vehicle_state_table", False)):
+            self.workers.insert(-2, self.vehicle_monitor)
         if self.mp_gateway is not None:
             self.workers.insert(4, self.mp_gateway)
 
