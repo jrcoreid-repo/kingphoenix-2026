@@ -398,7 +398,7 @@ class MissionManager(threading.Thread):
     def _safe_hold(self, reason):
         if not self.state.vehicle.armed or self.state.vehicle.mode == "LAND":
             return
-        mode = str(self.cfg["mission"].get("abort_mode", "LOITER")).upper()
+        mode = str(self.cfg["mission"].get("abort_mode", "RTL")).upper()
         result = self.command.set_mode(mode)
         if result.ok:
             print(f"[MISSION] {reason} -> {mode}")
