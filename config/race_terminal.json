@@ -69,5 +69,12 @@
     "guard_ceiling_m": 1.4,
     "guard_outside_s": 0.35,
     "lidar_stale_s": 0.6
+  },
+  "freshness_monitor": {
+    "lidar_max_age_s": 0.2,
+    "gps_max_age_s": 0.5,
+    "heartbeat_max_age_s": 2.5,
+    "mission_max_age_s": 1,
+    "global_position_max_age_s": 0.3
   }
 }
