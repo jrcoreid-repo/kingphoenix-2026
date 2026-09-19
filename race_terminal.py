@@ -283,7 +283,10 @@ class TerminalRace:
         confirm_s = float(c.get("confirm_s", 0.8))
         lidar_max_age_s = float(c.get("lidar_max_age_s", 0.30))
         max_groundspeed_mps = float(c.get("max_groundspeed_mps", 0.30))
-        target_mode = str(c.get("post_touchdown_mode", "ALT_HOLD")).upper()
+        target_modes = [
+            str(x).upper()
+            for x in c.get("post_touchdown_modes", ["ALT_HOLD", "STABILIZE"])
+        ]
 
         print(
             f"[LAND] LAND active | waiting LiDAR <= {threshold_m:.2f}m "
@@ -325,13 +328,24 @@ class TerminalRace:
                         f"[LAND] TOUCHDOWN CONFIRMED | LiDAR={float(lidar):.2f}m | "
                         f"GS={float(gs or 0.0):.2f}m/s"
                     )
-                    result = self.runtime.command.set_mode(target_mode)
-                    if not result.ok:
+                    selected_mode = None
+                    last_reason = ""
+                    for target_mode in target_modes:
+                        result = self.runtime.command.set_mode(target_mode)
+                        if result.ok:
+                            selected_mode = target_mode
+                            break
+                        last_reason = result.reason
+                        print(
+                            f"[WARN] {target_mode} after touchdown failed: "
+                            f"{result.reason}"
+                        )
+                    if selected_mode is None:
                         raise RuntimeError(
-                            f"{target_mode} after touchdown failed: {result.reason}"
+                            f"post-touchdown mode switch failed: {last_reason}"
                         )
                     print(
-                        f"[LAND] {target_mode} ACTIVE | waiting MANUAL DISARM"
+                        f"[LAND] {selected_mode} ACTIVE | waiting MANUAL DISARM"
                     )
 
                     while self.v.armed:
@@ -368,6 +382,11 @@ class TerminalRace:
             if seq is not None and seq != self.last_seq:
                 self.last_seq = int(seq)
                 print(f"[MISSION] SEQ{self.last_seq}")
+                if self.last_seq == int(m["land_seq"]):
+                    print(
+                        "[LAND] Final mission item active | waiting FC LAND mode, "
+                        "then LiDAR touchdown confirmation"
+                    )
 
             mode = str(self.v.mode or "").upper()
 
