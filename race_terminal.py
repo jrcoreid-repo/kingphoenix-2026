@@ -23,6 +23,7 @@ class TerminalRace:
             enable_runtime_logger=False,
             enable_safety_manager=False,
             enable_readiness=False,
+            enable_servo_initialize=False,
         )
         self.abort_requested = False
         self.started = False
@@ -114,12 +115,6 @@ class TerminalRace:
         )
         return actual
 
-    def close_payload(self):
-        ok, message = self.runtime.servo.close(source="RACE_PRESTART")
-        if not ok:
-            raise RuntimeError(message)
-        print(f"[SERVO] {message}")
-
     def activate_ai(self):
         if self.ai_active or self.drop_done:
             return
@@ -210,7 +205,8 @@ class TerminalRace:
         if self.abort_requested:
             raise RaceAbort("operator abort before start")
 
-        self.close_payload()
+        # Race terminal never touches the payload servo before the drop.
+        # The only race servo command from Pi is OPEN at confirmed vision drop.
 
         # Race takeoff is intentionally minimal:
         # GUIDED -> ARM -> NAV_TAKEOFF(1m) -> LiDAR >= trigger -> AUTO SEQ3.
