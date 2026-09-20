@@ -158,6 +158,23 @@ class MavlinkTx:
         except Exception:
             return False
 
+    def param_request_read(self, name: str):
+        master = self.with_master()
+        if master is None:
+            return False
+        try:
+            raw = str(name).encode("ascii", errors="ignore")[:16]
+            with self.lock:
+                master.mav.param_request_read_send(
+                    self.target_system,
+                    self.target_component,
+                    raw,
+                    -1,
+                )
+            return True
+        except Exception:
+            return False
+
     def mission_request_list(self):
         master = self.with_master()
         if master is None:
