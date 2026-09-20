@@ -54,6 +54,7 @@ class TerminalRace:
         self.final_reached = False
         self.drop_point_reached = False
         self.drop_window_handled = False
+        self.drop_seq_seen = False
         self.last_land_force_ts = 0.0
         self.fuzzy = None
         self.fuzzy_attempted = False
@@ -829,12 +830,29 @@ class TerminalRace:
             self.poll_runtime_events()
 
             seq = self.v.current_mission_item
-            if seq is not None and seq != self.last_seq:
-                self.last_seq = int(seq)
-                self.log(
-                    f"[MISSION] SEQ{self.last_seq} | "
-                    + self.vision_link_line(prefix="VISION")
-                )
+            if seq is not None:
+                seq_i = int(seq)
+                if seq_i == drop_seq:
+                    self.drop_seq_seen = True
+                if (
+                    self.drop_seq_seen
+                    and not self.drop_point_reached
+                    and seq_i > drop_seq
+                ):
+                    self.drop_point_reached = True
+                    self.drop_confirm = 0
+                    self.drop_last_frame = None
+                    self.log(
+                        f"[DROP] FC advanced SEQ{drop_seq}->{seq_i}; "
+                        "latching WP7 drop gate"
+                    )
+
+                if seq != self.last_seq:
+                    self.last_seq = seq_i
+                    self.log(
+                        f"[MISSION] SEQ{self.last_seq} | "
+                        + self.vision_link_line(prefix="VISION")
+                    )
 
             final_seq = int(m["final_seq"])
             if (
