@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import queue
 import signal
 import sys
 import threading
@@ -62,7 +61,6 @@ class TerminalRace:
         self.fuzzy_active = False
         self.fuzzy_result = "IDLE"
         self.speed_profile_state = None
-        self.fc_default_speed_mps = None
 
         display_cfg = dict(self.cfg.get("display", {}) or {})
         self.display_hz = max(1.0, float(display_cfg.get("refresh_hz", 5.0)))
@@ -842,59 +840,8 @@ class TerminalRace:
                 if seq == int(self.cfg["mission"]["final_seq"]):
                     self.final_reached = True
 
-    def read_fc_default_speed(self):
-        """Read FC WPNAV_SPEED so Python can restore Mission Planner's default."""
-        cfg = dict(self.cfg.get("speed_profile", {}) or {})
-        if not bool(cfg.get("enabled", False)):
-            return
-
-        q = self.runtime.param_protocol_queue
-        while True:
-            try:
-                q.get_nowait()
-            except queue.Empty:
-                break
-
-        for _attempt in range(3):
-            if not self.runtime.tx.param_request_read("WPNAV_SPEED"):
-                time.sleep(0.10)
-                continue
-
-            deadline = time.monotonic() + 1.0
-            while time.monotonic() < deadline:
-                try:
-                    msg = q.get(timeout=min(0.20, deadline - time.monotonic()))
-                except queue.Empty:
-                    continue
-
-                raw_id = getattr(msg, "param_id", "")
-                if isinstance(raw_id, (bytes, bytearray)):
-                    param_id = raw_id.decode("ascii", errors="ignore")
-                else:
-                    param_id = str(raw_id)
-                param_id = param_id.rstrip("\x00").strip().upper()
-                if param_id != "WPNAV_SPEED":
-                    continue
-
-                # ArduCopter WPNAV_SPEED is stored in cm/s.
-                speed_mps = float(getattr(msg, "param_value", 0.0)) / 100.0
-                if speed_mps <= 0.0:
-                    raise RuntimeError(
-                        f"invalid FC WPNAV_SPEED={speed_mps:.2f}m/s"
-                    )
-                self.fc_default_speed_mps = speed_mps
-                self.speed_profile_state = None
-                self.log(
-                    f"[SPEED] FC DEFAULT | WPNAV_SPEED={speed_mps:.2f}m/s"
-                )
-                return
-
-        raise RuntimeError(
-            "unable to read FC WPNAV_SPEED; cannot safely restore speed after WP8"
-        )
-
     def apply_speed_profile(self, seq):
-        """Use slow speed in WP6-WP8 and FC default everywhere else."""
+        """Apply explicit fast/slow AUTO speeds without changing mission items."""
         cfg = dict(self.cfg.get("speed_profile", {}) or {})
         if not bool(cfg.get("enabled", False)) or seq is None:
             return
@@ -902,29 +849,19 @@ class TerminalRace:
         seq_i = int(seq)
         slow_from = int(cfg.get("slow_from_seq", 6))
         slow_through = int(cfg.get("slow_through_seq", 8))
+        max_speed = float(cfg.get("speed_max_mps", 0.0))
         min_speed = float(cfg.get("speed_min_wp_mps", 0.0))
 
-        desired_state = (
-            "MIN" if slow_from <= seq_i <= slow_through else "DEFAULT"
-        )
+        desired_state = "MIN" if slow_from <= seq_i <= slow_through else "MAX"
         if desired_state == self.speed_profile_state:
             return
 
-        # At race start the FC is already using its own Mission Planner/
-        # WPNAV_SPEED default. Do not send any command until the slow zone.
-        if desired_state == "DEFAULT" and self.speed_profile_state is None:
-            self.speed_profile_state = "DEFAULT"
-            return
-
-        desired_speed = (
-            min_speed
-            if desired_state == "MIN"
-            else float(self.fc_default_speed_mps or 0.0)
-        )
+        desired_speed = min_speed if desired_state == "MIN" else max_speed
         if desired_speed <= 0.0:
-            raise RuntimeError(
-                f"speed profile {desired_state} has no valid target speed"
+            self.log(
+                f"[WARN] SPEED {desired_state} invalid ({desired_speed:.2f}m/s)"
             )
+            return
 
         if not self.runtime.tx.change_speed(desired_speed, speed_type=1):
             self.log(
@@ -934,9 +871,8 @@ class TerminalRace:
             return
 
         self.speed_profile_state = desired_state
-        label = "MIN" if desired_state == "MIN" else "FC DEFAULT"
         self.log(
-            f"[SPEED] {label} -> {desired_speed:.2f}m/s | SEQ{seq_i}"
+            f"[SPEED] {desired_state} -> {desired_speed:.2f}m/s | SEQ{seq_i}"
         )
 
     def handle_drop_point(self):
@@ -1167,7 +1103,6 @@ class TerminalRace:
             self.display_if_due(force=True)
             self.wait_preflight()
             self.read_fc_mission()
-            self.read_fc_default_speed()
             self.start_flight()
             self.run_auto()
             return 0
