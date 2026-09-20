@@ -15,7 +15,7 @@ class MavlinkRxWorker(threading.Thread):
     }
 
     def __init__(self, connection, state, events, stop_event, heartbeat_timeout_s=2.5,
-                 mirror_queue=None, mission_protocol_queue=None):
+                 mirror_queue=None, mission_protocol_queue=None, param_protocol_queue=None):
         super().__init__(name="MAVLinkRX")
         self.connection = connection
         self.state = state
@@ -25,6 +25,7 @@ class MavlinkRxWorker(threading.Thread):
         self.heartbeat_lost_latched = False
         self.mirror_queue = mirror_queue
         self.mission_protocol_queue = mission_protocol_queue
+        self.param_protocol_queue = param_protocol_queue
 
     def _mirror_packet(self, msg):
         if self.mirror_queue is None:
@@ -46,6 +47,19 @@ class MavlinkRxWorker(threading.Thread):
             return
         try:
             self.mission_protocol_queue.put_nowait(msg)
+        except Exception:
+            pass
+
+    def _param_protocol_packet(self, msg, src_sys, src_comp):
+        if self.param_protocol_queue is None or msg.get_type() != "PARAM_VALUE":
+            return
+        if (
+            int(src_sys) != int(self.connection.target_system)
+            or int(src_comp) != int(self.connection.target_component)
+        ):
+            return
+        try:
+            self.param_protocol_queue.put_nowait(msg)
         except Exception:
             pass
 
@@ -85,6 +99,7 @@ class MavlinkRxWorker(threading.Thread):
 
             self._mirror_packet(msg)
             self._mission_protocol_packet(msg, src_sys, src_comp)
+            self._param_protocol_packet(msg, src_sys, src_comp)
 
             v = self.state.vehicle
             v.mark_message(msg_type, now)
