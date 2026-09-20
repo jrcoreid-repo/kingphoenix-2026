@@ -137,13 +137,13 @@ class MavlinkTx:
     def send_guided_velocity(self, vx, vy, vz, yaw_rate=0.0):
         return self.send_body_velocity(vx, vy, vz, yaw_rate)
 
-    def change_speed(self, speed_mps: float, speed_type: int = 1):
-        """Change AUTO navigation speed without altering mission sequence."""
+    def change_speed(self, speed_mps: float):
+        """Set Copter AUTO horizontal speed using MAV_CMD_DO_CHANGE_SPEED."""
         try:
             from pymavlink import mavutil
             return self.command_long(
                 mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
-                [float(speed_type), float(speed_mps), -1.0, 0, 0, 0, 0],
+                [0.0, float(speed_mps), 0.0, 0.0, 0.0, 0.0, 0.0],
             )
         except Exception:
             return False
