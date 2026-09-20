@@ -84,6 +84,7 @@
   },
   "speed_profile": {
     "enabled": true,
+    "speed_max_mps": 10,
     "speed_min_wp_mps": 4,
     "slow_from_seq": 6,
     "slow_through_seq": 8
