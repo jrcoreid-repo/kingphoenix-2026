@@ -521,7 +521,9 @@ class TerminalRace:
         return True
 
     def vision_drop_once(self):
-        if not self.ai_active or self.drop_done or not self.drop_point_reached:
+        # Primary drop is allowed as soon as AI is active (WP6 onward).
+        # WP7 remains only the final stop/fallback gate if primary has not dropped.
+        if not self.ai_active or self.drop_done:
             return False
 
         c = self.cfg["vision"]
@@ -771,9 +773,18 @@ class TerminalRace:
                 self.log(f"[MISSION] REACHED SEQ{seq}")
                 if seq == int(self.cfg["mission"]["drop_seq"]):
                     self.drop_point_reached = True
-                    self.drop_confirm = 0
-                    self.drop_last_frame = None
-                    self.log(f"[DROP] DROP POINT REACHED SEQ{seq} | fresh AI confirmation required")
+                    if self.drop_done:
+                        self.log(
+                            f"[DROP] DROP POINT REACHED SEQ{seq} | "
+                            "primary drop already complete"
+                        )
+                    else:
+                        self.drop_confirm = 0
+                        self.drop_last_frame = None
+                        self.log(
+                            f"[DROP] DROP POINT REACHED SEQ{seq} | "
+                            "fresh AI confirmation required"
+                        )
                 if seq == int(self.cfg["mission"]["final_seq"]):
                     self.final_reached = True
 
@@ -947,8 +958,10 @@ class TerminalRace:
                 )
                 return
 
-            # WP6 only arms perception. Servo release is gated by a real
-            # MISSION_ITEM_REACHED event for WP7, handled below.
+            # Hybrid drop window:
+            # - WP6 activates perception.
+            # - Primary vision may release the payload anywhere from WP6 toward WP7.
+            # - WP7 is only the final stop/fallback gate if no primary drop occurred.
             if (
                 seq is not None
                 and int(seq) >= ai_seq
@@ -956,8 +969,22 @@ class TerminalRace:
                 and not self.drop_done
             ):
                 self.activate_ai()
+                if self.vision_drop_once():
+                    self.status_detail = (
+                        "primary drop complete before WP7; AUTO mission continues"
+                    )
+                    self.log(
+                        "[DROP] PRIMARY SUCCESS IN WP6->WP7 WINDOW | "
+                        "AUTO continues normally"
+                    )
+                    if settle_s > 0:
+                        time.sleep(settle_s)
 
-            if self.drop_point_reached and not self.drop_window_handled:
+            if (
+                self.drop_point_reached
+                and not self.drop_done
+                and not self.drop_window_handled
+            ):
                 self.handle_drop_point()
                 continue
 
