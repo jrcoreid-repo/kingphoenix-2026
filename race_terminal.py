@@ -342,10 +342,46 @@ class TerminalRace:
                 raise RuntimeError(
                     f"DROP SEQ{drop_seq} must be NAV_WAYPOINT; command={command}"
                 )
+
             if hold_s + 1e-6 < expected_hold_s:
-                raise RuntimeError(
-                    f"DROP SEQ{drop_seq} must STOP at WP7: set Mission Planner "
-                    f"Delay >= {expected_hold_s:.1f}s (FC currently {hold_s:.1f}s)"
+                if not bool(m.get("auto_patch_drop_wp_hold", True)):
+                    raise RuntimeError(
+                        f"DROP SEQ{drop_seq} must STOP at WP7: set Mission Planner "
+                        f"Delay >= {expected_hold_s:.1f}s (FC currently {hold_s:.1f}s)"
+                    )
+                if self.v.armed:
+                    raise RuntimeError(
+                        f"cannot auto-patch DROP SEQ{drop_seq} while vehicle ARMED"
+                    )
+
+                patched = [dict(item) for item in actual]
+                patched[drop_seq]["param1"] = expected_hold_s
+                self.log(
+                    f"[MISSION] PATCH WP7 | SEQ{drop_seq} delay "
+                    f"{hold_s:.1f}s -> {expected_hold_s:.1f}s"
+                )
+                self.runtime.fc_sync.upload_exact(patched)
+                actual = self.runtime.fc_sync.download()
+
+                if len(actual) != count:
+                    raise RuntimeError(
+                        f"mission verify count changed after WP7 patch: "
+                        f"{len(actual)} != {count}"
+                    )
+                verify_item = actual[drop_seq]
+                verify_hold_s = float(verify_item.get("param1", 0.0))
+                verify_command = int(verify_item.get("command", -1))
+                if verify_command != int(mavutil.mavlink.MAV_CMD_NAV_WAYPOINT):
+                    raise RuntimeError(
+                        f"WP7 verify command changed unexpectedly: {verify_command}"
+                    )
+                if verify_hold_s + 1e-6 < expected_hold_s:
+                    raise RuntimeError(
+                        f"WP7 delay patch verify failed: "
+                        f"{verify_hold_s:.1f}s < {expected_hold_s:.1f}s"
+                    )
+                self.log(
+                    f"[MISSION] PATCH VERIFIED | WP7 delay={verify_hold_s:.1f}s"
                 )
 
         self.log(
