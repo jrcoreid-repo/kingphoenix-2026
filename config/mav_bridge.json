@@ -21,5 +21,37 @@
     ]
   },
   "stats_interval_s": 5,
-  "default_mode": "race"
+  "default_mode": "race",
+  "telemetry_policy": {
+    "race": {
+      "enabled": true,
+      "request_on_fc_heartbeat": true,
+      "reassert_interval_s": 10,
+      "display_hz": 5,
+      "ansi": true,
+      "target_system": 1,
+      "target_component": 1,
+      "rates_hz": {
+        "DISTANCE_SENSOR": 50,
+        "ATTITUDE": 5,
+        "LOCAL_POSITION_NED": 5,
+        "GLOBAL_POSITION_INT": 5,
+        "GPS_RAW_INT": 5,
+        "VFR_HUD": 5,
+        "SYS_STATUS": 2,
+        "MISSION_CURRENT": 5
+      },
+      "lidar": {
+        "message": "DISTANCE_SENSOR",
+        "preferred_hz": 30,
+        "minimum_hz": 15,
+        "max_age_s": 0.1
+      }
+    },
+    "setup": {
+      "enabled": false,
+      "display_hz": 2,
+      "ansi": true
+    }
+  }
 }
