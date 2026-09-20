@@ -1,13 +1,10 @@
 {
   "mission": {
-    "start_seq": 3,
-    "vision_enable_seq": 8,
-    "drop_seq": 9,
-    "fallback_start_seq": 10,
-    "fallback_servo_open_seq": 11,
-    "fallback_servo_restore_seq": 12,
-    "resume_seq": 13,
-    "final_seq": 16
+    "start_seq": 1,
+    "vision_enable_seq": 6,
+    "drop_seq": 7,
+    "resume_seq": 8,
+    "final_seq": 11
   },
   "vision": {
     "confidence_threshold": 0.25,
