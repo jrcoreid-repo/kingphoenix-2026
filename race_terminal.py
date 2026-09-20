@@ -863,16 +863,58 @@ class TerminalRace:
             )
             return
 
-        if not self.runtime.tx.change_speed(desired_speed, speed_type=1):
+        try:
+            from pymavlink import mavutil
+            speed_cmd = int(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED)
+            accepted = int(mavutil.mavlink.MAV_RESULT_ACCEPTED)
+        except Exception:
+            speed_cmd = 178
+            accepted = 0
+
+        ack_result = None
+        for attempt in range(1, 4):
+            sent_ns = time.monotonic_ns()
+            if not self.runtime.tx.change_speed(desired_speed):
+                self.log(
+                    f"[WARN] SPEED {desired_state} send failed "
+                    f"{attempt}/3 | {desired_speed:.2f}m/s"
+                )
+                time.sleep(0.10)
+                continue
+
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline:
+                ack = self.v.find_command_ack(
+                    speed_cmd,
+                    sent_ns,
+                    source_system=self.runtime.tx.target_system,
+                    source_component=self.runtime.tx.target_component,
+                )
+                if ack is not None:
+                    ack_result = int(ack.result)
+                    break
+                time.sleep(0.02)
+
+            if ack_result == accepted:
+                break
+
             self.log(
-                f"[WARN] SPEED {desired_state} command failed | "
+                f"[WARN] SPEED {desired_state} no ACCEPTED ACK "
+                f"{attempt}/3 | ack={ack_result}"
+            )
+            ack_result = None
+
+        if ack_result != accepted:
+            self.log(
+                f"[WARN] SPEED {desired_state} NOT APPLIED | "
                 f"{desired_speed:.2f}m/s"
             )
             return
 
         self.speed_profile_state = desired_state
         self.log(
-            f"[SPEED] {desired_state} -> {desired_speed:.2f}m/s | SEQ{seq_i}"
+            f"[SPEED] {desired_state} ACCEPTED -> "
+            f"{desired_speed:.2f}m/s | SEQ{seq_i}"
         )
 
     def handle_drop_point(self):
