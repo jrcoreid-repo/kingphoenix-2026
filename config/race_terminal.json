@@ -6,7 +6,8 @@
     "resume_seq": 8,
     "final_seq": 11,
     "drop_wp_hold_s": 1,
-    "require_drop_wp_stop": true
+    "require_drop_wp_stop": true,
+    "auto_patch_drop_wp_hold": true
   },
   "vision": {
     "confidence_threshold": 0.25,
