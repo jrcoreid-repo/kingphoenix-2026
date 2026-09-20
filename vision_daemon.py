@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import signal
 import socket
@@ -29,7 +30,7 @@ class DropVisionDaemon:
     The daemon has no MAVLink, servo, mission, or flight-control authority.
     """
 
-    def __init__(self):
+    def __init__(self, initial_mode=None):
         self.cfg = load_json("vision_daemon.json")
         self.system = load_json("system.json")
         self.stop = False
@@ -114,8 +115,15 @@ class DropVisionDaemon:
         default_mode = str(self.cfg.get("default_mode", "STANDBY")).upper()
         if default_mode not in VALID_MODES:
             raise ValueError(f"invalid default_mode={default_mode}")
-        self.mode = default_mode
-        self.mode_source = "CONFIG"
+        requested_mode = (
+            str(initial_mode).upper().strip()
+            if initial_mode is not None
+            else default_mode
+        )
+        if requested_mode not in VALID_MODES:
+            raise ValueError(f"invalid initial_mode={requested_mode}")
+        self.mode = requested_mode
+        self.mode_source = "CLI" if initial_mode is not None else "CONFIG"
         self.mode_changed_ns = time.monotonic_ns()
 
         display = self.cfg.get("display", {})
@@ -667,7 +675,24 @@ class DropVisionDaemon:
 
 
 def main():
-    DropVisionDaemon().run()
+    parser = argparse.ArgumentParser(
+        description="KINGPHOENIX bottom-camera vision daemon"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["OFF", "STANDBY", "ACTIVE"],
+        default=None,
+        help="override startup mode (default comes from vision_daemon.json)",
+    )
+    parser.add_argument(
+        "--active",
+        action="store_true",
+        help="shortcut for --mode ACTIVE; useful for manual ex/ey testing",
+    )
+    args = parser.parse_args()
+
+    initial_mode = "ACTIVE" if args.active else args.mode
+    DropVisionDaemon(initial_mode=initial_mode).run()
     return 0
 
 
