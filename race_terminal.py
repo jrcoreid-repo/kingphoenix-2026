@@ -572,9 +572,14 @@ class TerminalRace:
         return True
 
     def vision_drop_once(self):
-        # Primary drop is allowed as soon as AI is active (WP6 onward).
-        # WP7 remains only the final stop/fallback gate if primary has not dropped.
+        # AI may acquire the target from WP6, but payload release is gated at
+        # WP7 by default so the aircraft can stop before dropping.
         if not self.ai_active or self.drop_done:
+            return False
+        allow_early = bool(
+            self.cfg.get("vision", {}).get("allow_early_drop", False)
+        )
+        if not allow_early and not self.drop_point_reached:
             return False
 
         c = self.cfg["vision"]
@@ -927,6 +932,9 @@ class TerminalRace:
         resume_seq = int(m["resume_seq"])
         dcfg = dict(self.cfg.get("drop", {}) or {})
         primary_timeout_s = float(dcfg.get("primary_at_drop_timeout_s", 1.0))
+        stabilize_s = max(
+            0.0, float(dcfg.get("stabilize_before_check_s", 0.5))
+        )
         hold_hz = max(5.0, float(dcfg.get("hold_command_hz", 20.0)))
         settle_s = float(dcfg.get("post_release_settle_s", 0.25))
 
@@ -942,6 +950,30 @@ class TerminalRace:
         self.activate_ai()
         self.drop_confirm = 0
         self.drop_last_frame = None
+
+        if stabilize_s > 0.0:
+            self.log(
+                f"[DROP] WP{drop_seq} STABILIZE | "
+                f"XY ZERO for {stabilize_s:.1f}s"
+            )
+            stable_deadline = time.monotonic() + stabilize_s
+            while time.monotonic() < stable_deadline:
+                self.display_if_due()
+                if self.abort_requested:
+                    raise RaceAbort(
+                        "operator abort during WP7 stabilization"
+                    )
+                if not self.v.connected or self.v.heartbeat_age_s() > 2.5:
+                    raise RuntimeError(
+                        "FC heartbeat lost during WP7 stabilization"
+                    )
+                if str(self.v.mode or "").upper() != "GUIDED":
+                    raise RaceAbort(
+                        f"pilot/mode takeover during WP7 stabilization: "
+                        f"{self.v.mode}"
+                    )
+                self.runtime.tx.send_body_velocity(0.0, 0.0, 0.0)
+                time.sleep(1.0 / hold_hz)
 
         primary_deadline = time.monotonic() + primary_timeout_s
         primary_success = False
@@ -1090,10 +1122,10 @@ class TerminalRace:
                 )
                 return
 
-            # Hybrid drop window:
-            # - WP6 activates perception.
-            # - Primary vision may release the payload anywhere from WP6 toward WP7.
-            # - WP7 is only the final stop/fallback gate if no primary drop occurred.
+            # Safe drop window:
+            # - WP6 activates perception for early target acquisition only.
+            # - Payload release is forbidden before WP7.
+            # - WP7 is the exclusive stop/align/drop gate.
             if (
                 seq is not None
                 and int(seq) >= ai_seq
@@ -1101,26 +1133,6 @@ class TerminalRace:
                 and not self.drop_done
             ):
                 self.activate_ai()
-                if self.vision_drop_once():
-                    self.status_detail = (
-                        f"primary drop complete before WP7; skipping to SEQ{resume_seq}"
-                    )
-                    self.log(
-                        f"[DROP] PRIMARY SUCCESS IN WP6->WP7 WINDOW | "
-                        f"SKIP WP7 HOLD -> SEQ{resume_seq}"
-                    )
-                    if settle_s > 0:
-                        time.sleep(settle_s)
-                    try:
-                        self.runtime.fc_sync.set_current(resume_seq)
-                        self.log(
-                            f"[MISSION] DROP DONE -> CURRENT SET TO SEQ{resume_seq}"
-                        )
-                    except MissionSyncError as exc:
-                        self.log(
-                            f"[WARN] drop released but WP7 skip failed: {exc} | "
-                            "AUTO will continue through WP7 hold"
-                        )
 
             if (
                 self.drop_point_reached
