@@ -331,6 +331,23 @@ class TerminalRace:
                 f"FC mission has {count} items; missing {', '.join(missing)}"
             )
 
+        drop_seq = int(m["drop_seq"])
+        if bool(m.get("require_drop_wp_stop", True)):
+            drop_item = actual[drop_seq]
+            expected_hold_s = float(m.get("drop_wp_hold_s", 1.0))
+            command = int(drop_item.get("command", -1))
+            hold_s = float(drop_item.get("param1", 0.0))
+            from pymavlink import mavutil
+            if command != int(mavutil.mavlink.MAV_CMD_NAV_WAYPOINT):
+                raise RuntimeError(
+                    f"DROP SEQ{drop_seq} must be NAV_WAYPOINT; command={command}"
+                )
+            if hold_s + 1e-6 < expected_hold_s:
+                raise RuntimeError(
+                    f"DROP SEQ{drop_seq} must STOP at WP7: set Mission Planner "
+                    f"Delay >= {expected_hold_s:.1f}s (FC currently {hold_s:.1f}s)"
+                )
+
         self.log(
             f"[MISSION] FC READ OK | items={count} | "
             + " | ".join(f"{k}=SEQ{v}" for k, v in required.items())
