@@ -60,6 +60,7 @@ class TerminalRace:
         self.fuzzy_attempted = False
         self.fuzzy_active = False
         self.fuzzy_result = "IDLE"
+        self.speed_profile_state = None
 
         display_cfg = dict(self.cfg.get("display", {}) or {})
         self.display_hz = max(1.0, float(display_cfg.get("refresh_hz", 5.0)))
@@ -660,6 +661,7 @@ class TerminalRace:
                     self.started = True
                     self.phase = "AUTO"
                     self.status_detail = f"AUTO mission running from SEQ{start_seq}"
+                    self.apply_speed_profile(start_seq)
                     self.log(f"[MISSION] AUTO START -> SEQ{start_seq}")
                     return
 
@@ -788,6 +790,43 @@ class TerminalRace:
                 if seq == int(self.cfg["mission"]["final_seq"]):
                     self.final_reached = True
 
+    def apply_speed_profile(self, seq):
+        """Apply two-stage AUTO speed profile without changing mission items."""
+        cfg = dict(self.cfg.get("speed_profile", {}) or {})
+        if not bool(cfg.get("enabled", False)) or seq is None:
+            return
+
+        seq_i = int(seq)
+        slow_from = int(cfg.get("slow_from_seq", 6))
+        slow_through = int(cfg.get("slow_through_seq", 8))
+        max_speed = float(cfg.get("speed_max_mps", 0.0))
+        min_speed = float(cfg.get("speed_min_wp_mps", 0.0))
+
+        desired_state = "MIN" if slow_from <= seq_i <= slow_through else "MAX"
+        if desired_state == self.speed_profile_state:
+            return
+
+        desired_speed = min_speed if desired_state == "MIN" else max_speed
+        if desired_speed <= 0.0:
+            self.log(
+                f"[SPEED] {desired_state} profile invalid ({desired_speed:.2f}m/s); "
+                "keeping FC speed"
+            )
+            self.speed_profile_state = desired_state
+            return
+
+        if not self.runtime.tx.change_speed(desired_speed, speed_type=1):
+            self.log(
+                f"[WARN] SPEED {desired_state} command failed | "
+                f"{desired_speed:.2f}m/s"
+            )
+            return
+
+        self.speed_profile_state = desired_state
+        self.log(
+            f"[SPEED] {desired_state} -> {desired_speed:.2f}m/s | SEQ{seq_i}"
+        )
+
     def handle_drop_point(self):
         """Freeze at WP7, require fresh primary AI, then fuzzy if needed."""
         if self.drop_window_handled or not self.drop_point_reached:
@@ -913,6 +952,7 @@ class TerminalRace:
 
                 if seq != self.last_seq:
                     self.last_seq = seq_i
+                    self.apply_speed_profile(seq_i)
                     self.log(
                         f"[MISSION] SEQ{self.last_seq} | "
                         + self.vision_link_line(prefix="VISION")
