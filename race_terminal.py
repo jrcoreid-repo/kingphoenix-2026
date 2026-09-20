@@ -387,6 +387,56 @@ class TerminalRace:
                     f"[MISSION] PATCH VERIFIED | WP7 delay={verify_hold_s:.1f}s"
                 )
 
+        # Keep the final race waypoint altitude synchronized with
+        # config/full_mission.json. Mission Planner remains the coordinate
+        # authority; Python only patches the final altitude when required.
+        final_seq = int(m["final_seq"])
+        expected_final_alt = float(
+            self.runtime.full_cfg["waypoint"]["final_wp_alt_m"]
+        )
+        final_item = actual[final_seq]
+        current_final_alt = float(final_item.get("alt_m", 0.0))
+        alt_tol = float(
+            self.runtime.full_cfg.get("mission_sync", {}).get(
+                "altitude_tolerance_m", 0.05
+            )
+        )
+        if abs(current_final_alt - expected_final_alt) > alt_tol:
+            if self.v.armed:
+                raise RuntimeError(
+                    f"cannot patch FINAL SEQ{final_seq} altitude while vehicle ARMED"
+                )
+
+            patched = [dict(item) for item in actual]
+            patched[final_seq]["alt_m"] = expected_final_alt
+            self.log(
+                f"[MISSION] PATCH FINAL ALT | SEQ{final_seq} "
+                f"{current_final_alt:.2f}m -> {expected_final_alt:.2f}m"
+            )
+            self.runtime.fc_sync.upload_exact(patched)
+            actual = self.runtime.fc_sync.download()
+
+            if len(actual) != count:
+                raise RuntimeError(
+                    f"mission verify count changed after final-alt patch: "
+                    f"{len(actual)} != {count}"
+                )
+            verify_alt = float(actual[final_seq].get("alt_m", 0.0))
+            if abs(verify_alt - expected_final_alt) > alt_tol:
+                raise RuntimeError(
+                    f"FINAL SEQ{final_seq} altitude patch verify failed: "
+                    f"FC={verify_alt:.2f}m expected={expected_final_alt:.2f}m"
+                )
+            self.log(
+                f"[MISSION] PATCH VERIFIED | FINAL SEQ{final_seq} "
+                f"alt={verify_alt:.2f}m"
+            )
+        else:
+            self.log(
+                f"[MISSION] FINAL ALT OK | SEQ{final_seq} "
+                f"alt={current_final_alt:.2f}m"
+            )
+
         self.log(
             f"[MISSION] FC READ OK | items={count} | "
             + " | ".join(f"{k}=SEQ{v}" for k, v in required.items())
