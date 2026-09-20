@@ -42,6 +42,7 @@ class KingphoenixRuntime:
         enable_readiness=True,
         enable_servo_initialize=True,
         enable_vision_stream=True,
+        enable_stream_config=True,
     ):
         self.enable_gcs = bool(enable_gcs)
         self.enable_mission_manager = bool(enable_mission_manager)
@@ -50,6 +51,7 @@ class KingphoenixRuntime:
         self.enable_readiness = bool(enable_readiness)
         self.enable_servo_initialize = bool(enable_servo_initialize)
         self.enable_vision_stream = bool(enable_vision_stream)
+        self.enable_stream_config = bool(enable_stream_config)
         self.cfg = load_json("system.json")
         self.full_cfg = load_full_mission_config()
 
@@ -179,8 +181,10 @@ class KingphoenixRuntime:
         # only because at 2 Hz it floods the field console and hides mission
         # events, AI transitions, servo ACKs and safety messages.
         self.workers = [
-            self.rx, self.stream_config, self.health,
+            self.rx, self.health,
         ]
+        if self.enable_stream_config:
+            self.workers.insert(1, self.stream_config)
         if self.enable_readiness:
             self.workers.append(self.readiness)
         if self.safety is not None:
