@@ -52,6 +52,7 @@ class TerminalRace:
         self.touchdown_confirmed = False
         self.landing_commanded = False
         self.final_reached = False
+        self.drop_point_reached = False
         self.last_land_force_ts = 0.0
         self.fuzzy = None
         self.fuzzy_attempted = False
@@ -247,7 +248,7 @@ class TerminalRace:
             (
                 f" FALLBACK: FUZZY={fuzzy_state:<8} | "
                 f"ATTEMPTED={'YES' if self.fuzzy_attempted else 'NO ':<3} | "
-                f"FC BLOCK={'READY' if not self.drop_done else 'DONE'}"
+                f"DROP WP={'REACHED' if self.drop_point_reached else 'WAIT'}"
             ),
             "----------------------------------------------------------------------",
             f" STATUS : {self.status_detail or '-'}",
@@ -312,7 +313,6 @@ class TerminalRace:
             "START": int(m["start_seq"]),
             "AI": int(m["vision_enable_seq"]),
             "DROP": int(m["drop_seq"]),
-            "FALLBACK": int(m["fallback_start_seq"]),
             "RESUME": int(m["resume_seq"]),
             "FINAL": int(m["final_seq"]),
         }
@@ -361,7 +361,7 @@ class TerminalRace:
         if not ok:
             self.log(
                 f"[WARN] Vision daemon ACTIVE failed: "
-                f"{reply.get('detail', 'no reply')} | FC fallback remains available"
+                f"{reply.get('detail', 'no reply')} | fuzzy remains available at drop WP"
             )
             return
         self.ai_active = True
@@ -396,7 +396,7 @@ class TerminalRace:
         return self.fuzzy
 
     def run_fuzzy_fallback(self):
-        """Run one bounded fuzzy attempt; FC fallback remains the final safety net."""
+        """Run one bounded fuzzy alignment attempt at the configured drop waypoint."""
         if self.drop_done or self.fuzzy_attempted:
             return False
 
@@ -404,7 +404,7 @@ class TerminalRace:
         if not bool(cfg.get("enabled", True)):
             self.fuzzy_attempted = True
             self.fuzzy_result = "DISABLED"
-            self.log("[FUZZY] disabled -> FC fallback")
+            self.log("[FUZZY] disabled -> continue mission without Pi drop fallback")
             return False
 
         self.fuzzy_attempted = True
@@ -420,7 +420,7 @@ class TerminalRace:
             self.fuzzy_result = "NO VISION"
             self.log(
                 f"[WARN] fuzzy fallback vision ACTIVE failed: "
-                f"{reply.get('detail', 'no reply')} -> FC fallback"
+                f"{reply.get('detail', 'no reply')} -> continue mission"
             )
             return False
 
@@ -449,7 +449,7 @@ class TerminalRace:
             except Exception:
                 pass
             self.phase = "AUTO"
-            self.status_detail = "fuzzy fallback failed; handing back to FC fallback"
+            self.status_detail = "fuzzy fallback failed; continuing mission"
             return False
 
         ok, message = self.runtime.servo.open(source="RACE_FUZZY_FALLBACK_DROP")
@@ -544,7 +544,7 @@ class TerminalRace:
         # The only race servo command from Pi is OPEN at confirmed vision drop.
 
         # Race takeoff is intentionally minimal:
-        # GUIDED -> ARM -> NAV_TAKEOFF(1m) -> LiDAR >= trigger -> AUTO SEQ3.
+        # GUIDED -> ARM -> NAV_TAKEOFF -> LiDAR >= trigger -> AUTO at configured WP1.
         # No profiled velocity handoff, taper, or hard LiDAR ceiling.
         tcfg = self.runtime.full_cfg["takeoff"]
         trigger_m = float(tcfg["target_alt_m"]) - float(tcfg["tolerance_m"])
@@ -714,13 +714,16 @@ class TerminalRace:
             if name == "MISSION_ITEM_REACHED":
                 seq = int(payload.get("seq", -1))
                 self.log(f"[MISSION] REACHED SEQ{seq}")
+                if seq == int(self.cfg["mission"]["drop_seq"]):
+                    self.drop_point_reached = True
+                    self.log(f"[DROP] DROP POINT REACHED SEQ{seq}")
                 if seq == int(self.cfg["mission"]["final_seq"]):
                     self.final_reached = True
 
     def run_auto(self):
         m = self.cfg["mission"]
         ai_seq = int(m["vision_enable_seq"])
-        fallback_seq = int(m["fallback_start_seq"])
+        drop_seq = int(m["drop_seq"])
         resume_seq = int(m["resume_seq"])
         settle_s = float(self.cfg["drop"].get("post_release_settle_s", 0.25))
 
@@ -739,7 +742,10 @@ class TerminalRace:
             seq = self.v.current_mission_item
             if seq is not None and seq != self.last_seq:
                 self.last_seq = int(seq)
-                self.log(f"[MISSION] SEQ{self.last_seq} | " + self.vision_link_line(prefix="VISION"))
+                self.log(
+                    f"[MISSION] SEQ{self.last_seq} | "
+                    + self.vision_link_line(prefix="VISION")
+                )
 
             final_seq = int(m["final_seq"])
             if (
@@ -752,9 +758,7 @@ class TerminalRace:
                 self.landing_commanded = True
                 self.phase = "LAND"
                 self.status_detail = f"final SEQ{final_seq} reached; LAND latch active"
-                self.log(
-                    f"[LAND] REACHED SEQ{final_seq} -> LAND LATCH ACTIVE"
-                )
+                self.log(f"[LAND] REACHED SEQ{final_seq} -> LAND LATCH ACTIVE")
 
             mode = str(self.v.mode or "").upper()
 
@@ -777,83 +781,80 @@ class TerminalRace:
 
             if self.started and self.v.armed and mode not in {"AUTO", "LAND", "RTL"}:
                 self.disable_ai("PILOT_TAKEOVER")
-                self.log(f"[PILOT] FC mode changed to {mode}; Pi stops autonomous intervention")
+                self.log(
+                    f"[PILOT] FC mode changed to {mode}; "
+                    "Pi stops autonomous intervention"
+                )
                 return
 
-            if seq is not None and int(seq) >= ai_seq and int(seq) < fallback_seq:
+            # Primary perception becomes active at WP6 and remains active through
+            # the WP7 drop point. A valid centered target opens the servo once;
+            # AUTO navigation itself is not skipped or rewritten.
+            if (
+                seq is not None
+                and int(seq) >= ai_seq
+                and not self.drop_point_reached
+                and not self.drop_done
+            ):
                 self.activate_ai()
 
             if self.vision_drop_once():
                 if settle_s > 0:
                     time.sleep(settle_s)
-                try:
-                    self.runtime.fc_sync.set_current(resume_seq)
-                    self.log(
-                        f"[DROP] SUCCESS -> SKIP FC FALLBACK -> SEQ{resume_seq}"
-                    )
-                except MissionSyncError as exc:
-                    self.log(
-                        f"[WARN] drop released but skip failed: {exc} | "
-                        "FC fallback remains available"
-                    )
+                self.status_detail = (
+                    f"primary drop complete; AUTO continues through SEQ{drop_seq}"
+                )
+                self.log(
+                    f"[DROP] SUCCESS -> AUTO CONTINUES | next planned drop point SEQ{drop_seq}"
+                )
 
+            # If WP7 is physically reached without a primary drop, immediately
+            # take one bounded fuzzy attempt. Afterwards resume at WP8 whether
+            # the fuzzy attempt succeeds or fails; the simple FC mission has no
+            # synthetic fallback block.
             if (
-                not self.drop_done
-                and seq is not None
-                and int(seq) >= fallback_seq
+                self.drop_point_reached
+                and not self.drop_done
                 and not self.fuzzy_attempted
             ):
-                self.log("[DROP] primary vision missed -> fuzzy fallback")
+                self.log(
+                    f"[DROP] SEQ{drop_seq} reached without primary drop -> fuzzy fallback"
+                )
                 fuzzy_success = self.run_fuzzy_fallback()
 
-                if fuzzy_success:
-                    if settle_s > 0:
-                        time.sleep(settle_s)
-                    try:
-                        self.runtime.fc_sync.set_current(resume_seq)
-                        result = self.runtime.command.set_mode("AUTO")
-                        if not result.ok:
-                            raise RuntimeError(f"AUTO resume failed: {result.reason}")
-                        self.phase = "AUTO"
-                        self.status_detail = f"fuzzy drop complete; resumed at SEQ{resume_seq}"
+                if settle_s > 0 and fuzzy_success:
+                    time.sleep(settle_s)
+
+                try:
+                    self.runtime.fc_sync.set_current(resume_seq)
+                    result = self.runtime.command.set_mode("AUTO")
+                    if not result.ok:
+                        raise RuntimeError(f"AUTO resume failed: {result.reason}")
+                    self.phase = "AUTO"
+                    if fuzzy_success:
+                        self.status_detail = (
+                            f"fuzzy drop complete; resumed at SEQ{resume_seq}"
+                        )
                         self.log(f"[FUZZY] SUCCESS -> AUTO SEQ{resume_seq}")
-                    except MissionSyncError as exc:
+                    else:
+                        self.status_detail = (
+                            f"fuzzy did not drop; continuing at SEQ{resume_seq}"
+                        )
                         self.log(
-                            f"[WARN] fuzzy drop released but resume failed: {exc}"
+                            f"[FUZZY] NO DROP -> AUTO CONTINUE SEQ{resume_seq}"
                         )
-                else:
-                    # Fuzzy already zeroed XY. Resume AUTO at the FC fallback block.
-                    try:
-                        self.runtime.fc_sync.set_current(fallback_seq)
-                        result = self.runtime.command.set_mode("AUTO")
-                        if not result.ok:
-                            raise RuntimeError(
-                                f"AUTO fallback resume failed: {result.reason}"
-                            )
-                        self.phase = "AUTO"
-                        self.status_detail = "FC fallback block owns drop"
-                        self.log(
-                            f"[FUZZY] FAILED -> AUTO FC FALLBACK SEQ{fallback_seq}"
-                        )
-                    except MissionSyncError as exc:
-                        raise RuntimeError(
-                            f"failed to hand back to FC fallback: {exc}"
-                        )
+                except MissionSyncError as exc:
+                    raise RuntimeError(
+                        f"failed to resume simple mission at SEQ{resume_seq}: {exc}"
+                    ) from exc
 
             if (
-                not self.drop_done
+                self.drop_point_reached
                 and self.fuzzy_attempted
                 and not self.fuzzy_active
-                and seq is not None
-                and int(seq) > fallback_seq
+                and not self.drop_done
             ):
-                # Once the FC fallback block has started, Pi no longer intervenes.
-                self.disable_ai("FC_FALLBACK")
-                self.fuzzy_result = (
-                    self.fuzzy_result
-                    if self.fuzzy_result == "SUCCESS"
-                    else "FC"
-                )
+                self.disable_ai("DROP_WINDOW_COMPLETE")
 
             if self.started and not self.v.armed:
                 self.log("[MISSION] COMPLETE | vehicle DISARMED")
