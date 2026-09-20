@@ -53,6 +53,7 @@ class TerminalRace:
         self.landing_commanded = False
         self.final_reached = False
         self.drop_point_reached = False
+        self.drop_window_handled = False
         self.last_land_force_ts = 0.0
         self.fuzzy = None
         self.fuzzy_attempted = False
@@ -466,7 +467,7 @@ class TerminalRace:
         return True
 
     def vision_drop_once(self):
-        if not self.ai_active or self.drop_done:
+        if not self.ai_active or self.drop_done or not self.drop_point_reached:
             return False
 
         c = self.cfg["vision"]
@@ -716,9 +717,97 @@ class TerminalRace:
                 self.log(f"[MISSION] REACHED SEQ{seq}")
                 if seq == int(self.cfg["mission"]["drop_seq"]):
                     self.drop_point_reached = True
-                    self.log(f"[DROP] DROP POINT REACHED SEQ{seq}")
+                    self.drop_confirm = 0
+                    self.drop_last_frame = None
+                    self.log(f"[DROP] DROP POINT REACHED SEQ{seq} | fresh AI confirmation required")
                 if seq == int(self.cfg["mission"]["final_seq"]):
                     self.final_reached = True
+
+    def handle_drop_point(self):
+        """Freeze at WP7, require fresh primary AI, then fuzzy if needed."""
+        if self.drop_window_handled or not self.drop_point_reached:
+            return
+
+        m = self.cfg["mission"]
+        drop_seq = int(m["drop_seq"])
+        resume_seq = int(m["resume_seq"])
+        dcfg = dict(self.cfg.get("drop", {}) or {})
+        primary_timeout_s = float(dcfg.get("primary_at_drop_timeout_s", 1.0))
+        hold_hz = max(5.0, float(dcfg.get("hold_command_hz", 20.0)))
+        settle_s = float(dcfg.get("post_release_settle_s", 0.25))
+
+        self.drop_window_handled = True
+        self.phase = "DROP"
+        self.status_detail = f"WP{drop_seq}/SEQ{drop_seq} reached; holding for AI drop decision"
+        self.log(f"[DROP] SEQ{drop_seq} REACHED -> GUIDED HOLD")
+
+        result = self.runtime.command.set_mode("GUIDED")
+        if not result.ok:
+            raise RuntimeError(f"GUIDED hold at drop point failed: {result.reason}")
+
+        self.activate_ai()
+        self.drop_confirm = 0
+        self.drop_last_frame = None
+
+        primary_deadline = time.monotonic() + primary_timeout_s
+        primary_success = False
+        while time.monotonic() < primary_deadline:
+            self.display_if_due()
+            if self.abort_requested:
+                raise RaceAbort("operator abort during WP7 drop hold")
+            if not self.v.connected or self.v.heartbeat_age_s() > 2.5:
+                raise RuntimeError("FC heartbeat lost during WP7 drop hold")
+            if str(self.v.mode or "").upper() != "GUIDED":
+                raise RaceAbort(
+                    f"pilot/mode takeover during WP7 drop hold: {self.v.mode}"
+                )
+
+            try:
+                self.runtime.tx.send_body_velocity(0.0, 0.0, 0.0)
+            except Exception:
+                pass
+
+            if self.vision_drop_once():
+                primary_success = True
+                break
+            time.sleep(1.0 / hold_hz)
+
+        fuzzy_success = False
+        if not primary_success and not self.drop_done:
+            self.log(
+                f"[DROP] primary not confirmed at SEQ{drop_seq} -> fuzzy alignment"
+            )
+            fuzzy_success = self.run_fuzzy_fallback()
+
+        if settle_s > 0 and self.drop_done:
+            time.sleep(settle_s)
+
+        try:
+            self.runtime.tx.send_body_velocity(0.0, 0.0, 0.0)
+        except Exception:
+            pass
+
+        try:
+            self.runtime.fc_sync.set_current(resume_seq)
+            result = self.runtime.command.set_mode("AUTO")
+            if not result.ok:
+                raise RuntimeError(f"AUTO resume failed: {result.reason}")
+        except MissionSyncError as exc:
+            raise RuntimeError(
+                f"failed to resume mission at SEQ{resume_seq}: {exc}"
+            ) from exc
+
+        self.phase = "AUTO"
+        if primary_success:
+            self.status_detail = f"primary drop complete; resumed at SEQ{resume_seq}"
+            self.log(f"[DROP] PRIMARY SUCCESS -> AUTO SEQ{resume_seq}")
+        elif fuzzy_success:
+            self.status_detail = f"fuzzy drop complete; resumed at SEQ{resume_seq}"
+            self.log(f"[FUZZY] SUCCESS -> AUTO SEQ{resume_seq}")
+        else:
+            self.disable_ai("DROP_WINDOW_COMPLETE")
+            self.status_detail = f"drop not confirmed; continuing at SEQ{resume_seq}"
+            self.log(f"[DROP] NO DROP -> AUTO CONTINUE SEQ{resume_seq}")
 
     def run_auto(self):
         m = self.cfg["mission"]
@@ -787,9 +876,8 @@ class TerminalRace:
                 )
                 return
 
-            # Primary perception becomes active at WP6 and remains active through
-            # the WP7 drop point. A valid centered target opens the servo once;
-            # AUTO navigation itself is not skipped or rewritten.
+            # WP6 only arms perception. Servo release is gated by a real
+            # MISSION_ITEM_REACHED event for WP7, handled below.
             if (
                 seq is not None
                 and int(seq) >= ai_seq
@@ -798,63 +886,9 @@ class TerminalRace:
             ):
                 self.activate_ai()
 
-            if self.vision_drop_once():
-                if settle_s > 0:
-                    time.sleep(settle_s)
-                self.status_detail = (
-                    f"primary drop complete; AUTO continues through SEQ{drop_seq}"
-                )
-                self.log(
-                    f"[DROP] SUCCESS -> AUTO CONTINUES | next planned drop point SEQ{drop_seq}"
-                )
-
-            # If WP7 is physically reached without a primary drop, immediately
-            # take one bounded fuzzy attempt. Afterwards resume at WP8 whether
-            # the fuzzy attempt succeeds or fails; the simple FC mission has no
-            # synthetic fallback block.
-            if (
-                self.drop_point_reached
-                and not self.drop_done
-                and not self.fuzzy_attempted
-            ):
-                self.log(
-                    f"[DROP] SEQ{drop_seq} reached without primary drop -> fuzzy fallback"
-                )
-                fuzzy_success = self.run_fuzzy_fallback()
-
-                if settle_s > 0 and fuzzy_success:
-                    time.sleep(settle_s)
-
-                try:
-                    self.runtime.fc_sync.set_current(resume_seq)
-                    result = self.runtime.command.set_mode("AUTO")
-                    if not result.ok:
-                        raise RuntimeError(f"AUTO resume failed: {result.reason}")
-                    self.phase = "AUTO"
-                    if fuzzy_success:
-                        self.status_detail = (
-                            f"fuzzy drop complete; resumed at SEQ{resume_seq}"
-                        )
-                        self.log(f"[FUZZY] SUCCESS -> AUTO SEQ{resume_seq}")
-                    else:
-                        self.status_detail = (
-                            f"fuzzy did not drop; continuing at SEQ{resume_seq}"
-                        )
-                        self.log(
-                            f"[FUZZY] NO DROP -> AUTO CONTINUE SEQ{resume_seq}"
-                        )
-                except MissionSyncError as exc:
-                    raise RuntimeError(
-                        f"failed to resume simple mission at SEQ{resume_seq}: {exc}"
-                    ) from exc
-
-            if (
-                self.drop_point_reached
-                and self.fuzzy_attempted
-                and not self.fuzzy_active
-                and not self.drop_done
-            ):
-                self.disable_ai("DROP_WINDOW_COMPLETE")
+            if self.drop_point_reached and not self.drop_window_handled:
+                self.handle_drop_point()
+                continue
 
             if self.started and not self.v.armed:
                 self.log("[MISSION] COMPLETE | vehicle DISARMED")
