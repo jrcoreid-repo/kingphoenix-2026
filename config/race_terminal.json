@@ -57,7 +57,7 @@
     "center_error": 0.12,
     "center_confirm_frames": 2,
     "center_offset_x": 0,
-    "center_offset_y": 0,
+    "center_offset_y": 0.109,
     "mid_error": 0.25,
     "far_error": 0.45,
     "minimum_speed_mps": 0.12,
