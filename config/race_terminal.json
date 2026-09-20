@@ -86,7 +86,6 @@
     "enabled": true,
     "speed_min_wp_mps": 4,
     "slow_from_seq": 6,
-    "slow_through_seq": 8,
-    "restore_param": "WPNAV_SPEED"
+    "slow_through_seq": 8
   }
 }
