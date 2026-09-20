@@ -81,5 +81,12 @@
     "heartbeat_max_age_s": 2.5,
     "mission_max_age_s": 1,
     "global_position_max_age_s": 0.5
+  },
+  "speed_profile": {
+    "enabled": true,
+    "speed_max_mps": 10,
+    "speed_min_wp_mps": 4,
+    "slow_from_seq": 6,
+    "slow_through_seq": 8
   }
 }
