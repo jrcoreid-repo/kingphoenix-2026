@@ -971,14 +971,24 @@ class TerminalRace:
                 self.activate_ai()
                 if self.vision_drop_once():
                     self.status_detail = (
-                        "primary drop complete before WP7; AUTO mission continues"
+                        f"primary drop complete before WP7; skipping to SEQ{resume_seq}"
                     )
                     self.log(
-                        "[DROP] PRIMARY SUCCESS IN WP6->WP7 WINDOW | "
-                        "AUTO continues normally"
+                        f"[DROP] PRIMARY SUCCESS IN WP6->WP7 WINDOW | "
+                        f"SKIP WP7 HOLD -> SEQ{resume_seq}"
                     )
                     if settle_s > 0:
                         time.sleep(settle_s)
+                    try:
+                        self.runtime.fc_sync.set_current(resume_seq)
+                        self.log(
+                            f"[MISSION] DROP DONE -> CURRENT SET TO SEQ{resume_seq}"
+                        )
+                    except MissionSyncError as exc:
+                        self.log(
+                            f"[WARN] drop released but WP7 skip failed: {exc} | "
+                            "AUTO will continue through WP7 hold"
+                        )
 
             if (
                 self.drop_point_reached
