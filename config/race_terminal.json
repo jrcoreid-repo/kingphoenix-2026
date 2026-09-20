@@ -5,7 +5,7 @@
     "drop_seq": 7,
     "resume_seq": 8,
     "final_seq": 11,
-    "drop_wp_hold_s": 1,
+    "drop_wp_hold_s": 3,
     "require_drop_wp_stop": true,
     "auto_patch_drop_wp_hold": true
   },
@@ -13,12 +13,14 @@
     "confidence_threshold": 0.25,
     "confirm_frames": 2,
     "freshness_s": 0.2,
-    "coarse_center_error_max": 0.35
+    "coarse_center_error_max": 0.35,
+    "allow_early_drop": false
   },
   "drop": {
     "post_release_settle_s": 0.25,
-    "primary_at_drop_timeout_s": 1,
-    "hold_command_hz": 20
+    "primary_at_drop_timeout_s": 0.6,
+    "hold_command_hz": 20,
+    "stabilize_before_check_s": 0.5
   },
   "preflight": {
     "heartbeat_max_age_s": 2.5,
