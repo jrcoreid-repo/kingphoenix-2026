@@ -30,6 +30,7 @@ class TerminalRace:
             enable_readiness=False,
             enable_servo_initialize=False,
             enable_vision_stream=False,
+            enable_stream_config=False,
         )
         vdcfg = dict(self.cfg.get("vision_daemon", {}) or {})
         self.vision = VisionDaemonClient(
