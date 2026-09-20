@@ -108,12 +108,14 @@ class KingphoenixRuntime:
         mp_cfg = self.cfg.get("mission_planner_gateway", {})
         self.mp_mirror_queue = queue.Queue(maxsize=int(mp_cfg.get("mirror_queue_size", 512)))
         self.mission_protocol_queue = queue.Queue(maxsize=256)
+        self.param_protocol_queue = queue.Queue(maxsize=64)
 
         self.rx = MavlinkRxWorker(
             self.connection, self.state, self.events, self.stop_event,
             heartbeat_timeout_s=mav_cfg.get("heartbeat_timeout_s", 2.5),
             mirror_queue=self.mp_mirror_queue if bool(mp_cfg.get("enabled", False)) else None,
             mission_protocol_queue=self.mission_protocol_queue,
+            param_protocol_queue=self.param_protocol_queue,
         )
         self.stream_config = MavlinkStreamConfigurator(
             self.tx, self.state, self.stop_event, requested_rates,
