@@ -15,13 +15,14 @@ The existing KingPhoenix main branch uses YOLO26/Hailo with a bbox-based estimat
 - Detector age uses the last detection's source capture timestamp; it does not reset on a geometric update.
 - Method 2.3: contour-derived physical corner candidates inside an expanded detector ROI and planar IPPE PnP with real intrinsics, positive depth and unresolved-ambiguity rejection are provided in geometry.py. Detector bounding-box corners are not used as PnP correspondences.
 - Method 2.5: measurement acceptance separately checks four corners, positive depth, resolved ambiguity, <=3 px reprojection RMSE, and <=150 ms geometric feedback age.
+- Method 2.5: guidance.py provides an offline-only P controller (0.5 s^-1, 0.05 m deadband, 0.30 m/s limits), one-second alignment dwell, HOLD and two-second feedback-loss abort; it never sends MAVLink.
 - Method 2.6: offline trace replay compares policy execution counts, coverage, RTK-paired localization RMSE and the 0.20 m high-error acceptance threshold.
 
 ## Run from repository root
 
 Python 3.10+; scheduler and CSV replay use only the standard library.
 
-    python -m unittest research.ijain_selective_edge_vision.test_research -v
+    python -m unittest research.ijain_selective_edge_vision.test_research research.ijain_selective_edge_vision.test_guidance -v
     python -m research.ijain_selective_edge_vision.replay --input /path/to/recorded_trace.csv --out-dir /tmp/ijain-replay --policy all --inference-ms 43
 
 Run optional image geometry with opencv-python and numpy, measured gate dimensions and calibrated camera intrinsics at the native capture resolution.
